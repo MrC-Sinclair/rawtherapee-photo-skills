@@ -1,0 +1,12 @@
+* text=auto eol=lf
+
+# Windows batch scripts keep CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binaries
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.pp3 binary
+

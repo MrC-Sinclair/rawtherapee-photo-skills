@@ -1,0 +1,21 @@
+# Python cache / bytecode
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Local machine config (absolute CLI paths, personal settings)
+config.toml
+photo-toolkit/config.toml
+photo-grader/config.toml
+photo-previewer/config.toml
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local virtualenvs
+.venv/
+venv/

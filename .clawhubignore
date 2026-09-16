@@ -1,0 +1,20 @@
+# Files excluded from the published bundle.
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local user config
+config.toml
+photo-toolkit/config.toml
+photo-grader/config.toml
+photo-previewer/config.toml
+
+# OS / editor cruft
+.DS_Store
+.idea/
+.vscode/
+
+# Local virtualenvs
+.venv/
+venv/
