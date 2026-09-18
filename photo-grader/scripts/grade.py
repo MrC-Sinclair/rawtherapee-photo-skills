@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Photo Grader — Apply Lightroom-style color grading via RawTherapee CLI.
 
@@ -835,7 +835,7 @@ def build_pp3(params, style="graded", config=None, engine_version=None):
     pp3[("RAW", "FF_AutoClipControl")] = False
 
     # Output settings
-    bpp = cfg.get("output_bpp", 8)
+    bpp = cfg.get("output_bpp", 16)
     pp3[("Color Management", "OutputBPC")] = True
     if bpp == 16:
         pp3[("Output", "Format")] = "TIFF"
@@ -1040,7 +1040,21 @@ def _prepare_rt_input(raw_path, work_dir):
     return tiff_path, tiff_path
 
 
-def _compute_output_name(raw_path, safe_style, raw_root=None):
+# Input format classification for smart output routing
+_RAW_EXTS = {".nef", ".nrw", ".cr2", ".cr3", ".crw", ".arw", ".srf", ".sr2",
+             ".raf", ".orf", ".rw2", ".pef", ".srw", ".rwl", ".dng",
+             ".3fr", ".fff", ".iiq", ".x3f"}
+_HEIC_EXTS = {".heic", ".heif"}
+_JPG_EXTS = {".jpg", ".jpeg"}
+
+
+def is_hires_input(raw_path):
+    """Return True if input is RAW or high-bit-depth HEIC (worth 16-bit TIFF)."""
+    ext = raw_path.suffix.lower()
+    return ext in _RAW_EXTS or ext in _HEIC_EXTS
+
+
+def _compute_output_name(raw_path, safe_style, raw_root=None, output_ext=".jpg"):
     """Compute output filename with subdirectory prefix if needed.
 
     If raw_path is under a subdirectory of raw_root, prefix the output name
@@ -1052,10 +1066,10 @@ def _compute_output_name(raw_path, safe_style, raw_root=None):
             rel = raw_path.relative_to(raw_root)
             if rel.parent != Path("."):
                 prefix = str(rel.parent).replace("/", "_").replace("\\", "_")
-                return f"{prefix}_{stem}_{safe_style}.jpg"
+                return f"{prefix}_{stem}_{safe_style}{output_ext}"
         except ValueError:
             pass
-    return f"{stem}_{safe_style}.jpg"
+    return f"{stem}_{safe_style}{output_ext}"
 
 
 def grade_single_file(
@@ -1079,8 +1093,19 @@ def grade_single_file(
         style = params.get("style", "graded")
         safe_style = "".join(c if c.isalnum() or c in "_-" else "_" for c in style)[:20]
 
+        # Smart output routing: RAW/HEIC -> 16-bit TIFF, JPG -> JPG 100%
+        import copy
+        effective_config = copy.deepcopy(config)
+        if is_hires_input(raw_path):
+            effective_config["output_bpp"] = 16
+            output_ext = ".tif"
+        else:
+            effective_config["output_bpp"] = 8
+            effective_config["output_quality"] = 100
+            output_ext = ".jpg"
+
         pp3_content, safe_style = build_pp3(
-            params, style=safe_style, config=config, engine_version=_RT_VERSION
+            params, style=safe_style, config=effective_config, engine_version=_RT_VERSION
         )
 
         # PP3-only mode
@@ -1093,7 +1118,7 @@ def grade_single_file(
             elapsed = time.monotonic() - start
             return (raw_name, True, f"✓ PP3 generated: {pp3_path.name} ({len(pp3_content)} bytes)", elapsed)
 
-        jpg_name = _compute_output_name(raw_path, safe_style, raw_root)
+        jpg_name = _compute_output_name(raw_path, safe_style, raw_root, output_ext)
         jpg_path = output_dir / jpg_name
 
         if jpg_path.exists() and not overwrite:
@@ -1142,22 +1167,25 @@ def grade_single_file(
             return (raw_name, False, f"✗ {raw_name}: RT error (code {result.returncode})\n{stderr_tail}", elapsed)
 
         # RT writes the render into its scratch dir under the ORIGINAL stem
-        # (e.g. "<stem>.jpg") for both RAW and JPG input; the styled
-        # "<stem>_<style>.jpg" name is applied by this script afterwards.
+        # (e.g. "<stem>.tif" for 16-bit TIFF, "<stem>.jpg" for JPEG).
+        # The styled output name is applied by this script afterwards.
         # The source file must never be moved.
-        produced = task_tmp / f"{raw_path.stem}.jpg"
+        produced = task_tmp / f"{raw_path.stem}{output_ext}"
         if produced.exists():
             os.replace(str(produced), str(jpg_path))
         else:
-            leftovers = sorted(task_tmp.glob("*.jpg"))
+            # Try any image extension in scratch dir (TIFF/JPG variants)
+            leftovers = sorted(task_tmp.glob(f"*{output_ext}"))
+            if not leftovers:
+                leftovers = sorted(task_tmp.glob("*.tif")) + sorted(task_tmp.glob("*.tiff")) + sorted(task_tmp.glob("*.jpg"))
             if leftovers:
                 os.replace(str(leftovers[0]), str(jpg_path))
             else:
                 # RT occasionally outputs into the input directory (rare);
                 # move only if that file is NOT the source file itself.
-                alt_jpg = raw_path.parent / f"{raw_path.stem}.jpg"
-                if alt_jpg.exists() and alt_jpg.resolve() != raw_path.resolve():
-                    shutil.move(str(alt_jpg), str(jpg_path))
+                alt_img = raw_path.parent / f"{raw_path.stem}{output_ext}"
+                if alt_img.exists() and alt_img.resolve() != raw_path.resolve():
+                    shutil.move(str(alt_img), str(jpg_path))
         shutil.rmtree(task_tmp, ignore_errors=True)
         try:
             task_tmp.parent.rmdir()  # drop __rt_tmp__ once the last job is done
@@ -1170,9 +1198,9 @@ def grade_single_file(
             file_size_kb = output_jpg.stat().st_size / 1024
             return (raw_name, True, f"✓ {output_jpg.name} ({file_size_kb:.0f}KB)", elapsed)
         else:
-            alt_jpg = raw_path.parent / f"{raw_path.stem}_{safe_style}.jpg"
-            if alt_jpg.exists():
-                return (raw_name, True, f"✓ {alt_jpg.name} (RT side-by-side)", elapsed)
+            alt_img = raw_path.parent / f"{raw_path.stem}_{safe_style}{output_ext}"
+            if alt_img.exists():
+                return (raw_name, True, f"✓ {alt_img.name} (RT side-by-side)", elapsed)
             return (raw_name, True, f"✓ {raw_name} (RT completed)", elapsed)
 
     except subprocess.TimeoutExpired:
@@ -1478,7 +1506,7 @@ Examples:
     )
     parser.add_argument("--output", type=str, default=None, help="Output directory for graded JPGs")
     parser.add_argument("--config", type=str, default=None, help="Path to config.toml")
-    parser.add_argument("--quality", type=int, default=None, help="JPEG quality 1-100 (default: 95)")
+    parser.add_argument("--quality", type=int, default=None, help="JPEG quality 1-100 (default: 100, maximum quality)")
     parser.add_argument("--overwrite", action="store_true", default=None, help="Overwrite existing output files")
     parser.add_argument("--dry-run", action="store_true", help="Preview without processing")
     # RT-specific options
@@ -1520,7 +1548,7 @@ Examples:
 
     raw_dir_raw = args.raw_dir or cfg.get("raw_dir") or cfg.get("nef_dir")
     output_raw = args.output or cfg.get("output_dir")
-    quality = args.quality if args.quality is not None else cfg.get("jpeg_quality", 95)
+    quality = args.quality if args.quality is not None else cfg.get("jpeg_quality", 100)
     workers = args.workers if args.workers is not None else cfg.get("workers") or get_cpu_count()
     overwrite = args.overwrite if args.overwrite is not None else cfg.get("overwrite", False)
     fast_export = args.fast_export or cfg.get("fast_export", False)

@@ -6,8 +6,8 @@ raw_dir = ""
 # 调色输出目录
 output_dir = ""
 
-# 输出 JPEG 画质 (1-100)，调色输出建议 95
-jpeg_quality = 95
+# 输出 JPEG 画质 (1-100)，100 = 最高质量（默认）
+jpeg_quality = 100
 
 # 是否覆盖已存在的输出文件
 overwrite = false
@@ -29,8 +29,8 @@ rawtherapee_cli = ""
 # 快速导出模式 (-f)：跳过不需要的处理模块加速渲染
 fast_export = false
 
-# 输出位深：8 或 16 (TIFF/PNG 有效；JPEG 固定 8-bit)
-output_bpp = 8
+# 输出位深：8 = 8-bit JPG；16 = 16-bit TIFF（无损存档，文件更大）
+output_bpp = 16
 
 # 是否启用镜头校正 (lensfun)
 lens_correction = true

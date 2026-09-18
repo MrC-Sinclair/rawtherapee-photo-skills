@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """photo-previewer — Local HTTP preview server for photo grading sessions.
 
 Layout: pure scanning helpers → app context builder → HTTP request handler
@@ -199,7 +199,7 @@ def build_session_manifest(session_dir: Path | str) -> dict:
     # ``tl_uniform``), which makes rpartition('_') mis-split the name. Instead
     # each params entry claims its file by explicit suffix matching.
     graded_files = [
-        p for p in graded_dir.iterdir() if p.is_file() and p.suffix.lower() in (".jpg", ".jpeg")
+        p for p in graded_dir.iterdir() if p.is_file() and p.suffix.lower() in (".jpg", ".jpeg", ".tif", ".tiff")
     ]
     claimed: set[str] = set()
 
@@ -237,7 +237,7 @@ def build_session_manifest(session_dir: Path | str) -> dict:
             cells_by_style.setdefault(style, []).append(
                 {
                     "stem": stem,
-                    "graded_filename": graded_filename or f"{stem}_{style}.jpg",
+                    "graded_filename": graded_filename or f"{stem}_{style}.tif",
                     "graded_missing": graded_filename is None,
                     "original_path": str(_find_thumbnail(session_path, stem) or file_ref),
                 }

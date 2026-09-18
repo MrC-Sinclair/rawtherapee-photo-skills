@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Layout Preview Generator — Compare original vs graded photos side-by-side,
 or compose graded photos into a grid preview.
@@ -99,7 +99,7 @@ def find_graded_images(graded_dir, params_json=None):
 
     all_jpgs = {}
     for p in graded_dir.iterdir():
-        if p.is_file() and p.suffix.lower() in (".jpg", ".jpeg"):
+        if p.is_file() and p.suffix.lower() in (".jpg", ".jpeg", ".tif", ".tiff"):
             all_jpgs[p.stem.lower()] = p
             # Also index by original stem (before style suffix)
             # e.g. "DSC_0001_暖春丝滑" → "DSC_0001"
