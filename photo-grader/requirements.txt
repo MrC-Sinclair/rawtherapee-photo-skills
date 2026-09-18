@@ -1,7 +1,13 @@
 # photo-grader dependencies
 #
 # RawTherapee CLI is the sole processing engine.
-# Python deps are minimal — only tomli for config parsing.
+# Python deps are minimal — config parsing plus HEIC transcoding.
 
 # Required: config.toml parsing (stdlib in Python 3.11+)
 tomli>=1.1.0 ; python_version < "3.11"
+
+# Required: HEIC/HEIF input. RawTherapee cannot read HEIC (the 5.13 Windows build
+# is compiled without libheif and exits rc=2 on .heic), so grade.py transcodes
+# HEIC → TIFF with pillow_heif before calling the CLI.
+# NOTE: GPLv2 licensed
+pillow-heif>=0.13.0

@@ -8,6 +8,59 @@ This skill bundles two upstream ClawHub skills, `photo-toolkit` and `photo-grade
 ClawHub / Marvis treat one folder as one skill. The per-module history lives in
 `photo-toolkit/CHANGELOG.md` and `photo-grader/CHANGELOG.md`.
 
+## [1.0.5] - 2026-09-18
+
+The tonal section is honest now — every slider it advertises either reaches the engine or is
+reported. White balance, tone curves and the auto-matched curve conflict had all been silently
+swallowed by RawTherapee 5.13.
+
+### Fixed
+
+- **`photo-grader/scripts/grade.py`: white balance was a no-op.** `Temperature` / `Green` were
+  written without enabling the tool and without `Setting=Custom`, so RT kept the camera white
+  balance: the rendered file was byte-identical with and without `temperature_kelvin` (pixel diff
+  0.00, 12.99 once both keys are set).
+- **`photo-grader/scripts/grade.py`: tone curves were a no-op whenever auto-matched curve was on.**
+  The 0-999 → FCT_CubicSpline change in 1.0.4 was necessary but not sufficient — `HistogramMatching=1`
+  (the shipped default, `auto_matched_curve = true`) replaces `[Exposure] Curve` outright, so every
+  `tone_curve` / `whites` / `blacks` adjustment still rendered as a 0.00 diff. `build_pp3()` now skips
+  histogram matching for parameter sets that define those keys, prints one stderr notice, and keeps
+  the mapped curve (28.59 diff). `highlights` / `shadows` deliberately keep histogram matching: they
+  map to `HighlightCompr` / `ShadowCompr`, not to the curve (2.54 diff from the compression alone).
+- **`whites` / `blacks` are no longer dropped.** RT has no dedicated keys for them; both are folded
+  into the tone-curve endpoints instead (35.41 diff for `whites: 80, blacks: -60`).
+- **HEIC input works.** The RawTherapee Windows build has no libheif support and exits rc=2 on
+  `.heic`; files are now transcoded to TIFF with `pillow_heif` before grading.
+- **Concurrent renders no longer collide.** Parallel jobs on the same source file overwrote each
+  other's pp3 / TIFF / `-o` output paths and died with `Error saving to …`. Every job now renders into
+  its own `__rt_tmp__/<stem>_<style>_<pid>_<ts>` scratch directory, is published with `os.replace()`
+  and cleaned up on failure.
+- **`AppVersion` in generated pp3 files is the real engine version** (parsed from
+  `rawtherapee-cli -h`); it had been hard-coded to 5.11 while the engine was 5.13.
+- **Invalid parameter JSON reports the problem and the offending line instead of a bare traceback.**
+- **`--dry-run` / `--pp3-only` no longer demand `--output`.**
+- **Wrong-shaped `hsl` / `color_grading` input was swallowed silently.** A nested `hsl` object
+  (`{"blue": {"saturation": -40}}`) or a zone-nested `color_grading` (`{"shadow": {"hue": …}}`)
+  produced a clean render with no adjustment and no message, because both mappings expect a list /
+  flat keys. Wrong `hsl` containers, unknown `hsl` channel names and nested `color_grading` values are
+  now announced on stderr with the expected shape.
+
+### Changed
+
+- `SKILL.md`: `pillow-heif` moved from optional to required, with the reason spelled out (RawTherapee
+  — including the 5.13 Windows build — cannot read HEIC; both photo-toolkit and photo-grader need the
+  library).
+- `SKILL.md` and `photo-grader/templates/rt-mapping-reference.md`: new "grading_params.json input
+  shape" section showing the correct `hsl` list and flat `color_grading` keys, i.e. the two forms that
+  used to fail without a trace.
+
+### Verified
+
+- A/B CLI render regression on RT 5.13 (Canon EOS 2000D CR2 + HEIC): base vs `tone_curve` 27.77,
+  base vs `whites`/`blacks` 35.41, base vs `highlights`/`shadows` 2.54, base vs white balance 41.24.
+- Parallel batches (6 and 7 jobs over the same source file) finish rc=0 with no `Error saving`
+  collisions and no `__rt_tmp__` leftovers.
+
 ## [1.0.4] - 2026-09-17
 
 The `hsl` / `color_grading` mapping actually works now — it had been silently ignored by the engine.

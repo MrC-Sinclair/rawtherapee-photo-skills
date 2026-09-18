@@ -67,6 +67,19 @@
 | 分区权重不等 | `rlo=strProtect`（阴影）、`rlm=1.5×`（中间调）、`rlh=2.2×`（高光） | 同滑块的染色强度随明度区递增 |
 | 染色为逐通道加性 | `toningsmh()` 的 `corr = 20000×val×kl×strProtect`，非 HSV 混合 | 分区平均 ΔRGB 方向与目标色相一致，幅度随亮度连续变化 |
 
+### grading_params.json 输入结构（易错点）
+
+映射层接受的输入是**扁平**的 LR 风格字段。以下两种写法此前会静默失效（PP3 照常生成、画面无任何变化），
+自 1.0.5 起 `grade.py` 会在 stderr 明确告警并忽略：
+
+| 字段 | ✅ 正确 | ❌ 告警并忽略 |
+| ---- | ------ | ------------- |
+| `hsl` | `"hsl": [{"channel": "blue", "saturation": -40}, {"channel": "green", "hue": 20}]` —— **列表**，`channel` 取 red/orange/yellow/green/aqua/blue/purple/magenta，每项可带 `hue` / `saturation` / `luminance` | `"hsl": {"blue": {"saturation": -40}}`（对象或嵌套写法） |
+| `color_grading` | `"color_grading": {"shadow_hue": 220, "shadow_saturation": 30, "highlight_hue": 40, "highlight_saturation": 25}` —— **扁平**键（`shadow_*` / `midtone_*` / `highlight_*`） | `"color_grading": {"shadow": {"hue": 220, "saturation": 30}}`（按区分组的嵌套写法） |
+
+- 单通道数值绝对值 < 0.5 视为未调整，不写入曲线。
+- 完整可用字段以 `photo-grader/scripts/grade.py` 中的 `rt_map_*()` 函数为准。
+
 ### 参数换算示例
 
 | LR 输入              | RT 实际值                        | 说明              |

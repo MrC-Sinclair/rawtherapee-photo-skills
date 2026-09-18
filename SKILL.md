@@ -1,6 +1,6 @@
 ﻿---
 name: rawtherapee-photo-skills
-version: 1.0.4
+version: 1.0.5
 description: |
   AI photography post-processing toolkit (photo-toolkit + photo-grader + photo-previewer
   merged into one skill):
@@ -39,7 +39,10 @@ description: |
   Dependencies:
     System: libraw (RedHat: dnf install LibRaw-devel / Debian: apt-get install libraw-dev),
             ffmpeg (only needed by assemble.py), RawTherapee CLI (only needed by photo-grader)
-    Python: rawpy, pillow, numpy, pillow-heif (optional, for HEIC/HEIF), tomli (Python < 3.11)
+    Python: rawpy, pillow, numpy, tomli (Python < 3.11),
+            pillow-heif (HEIC/HEIF support: photo-toolkit decodes HEIC with it, and
+            photo-grader transcodes HEIC→TIFF with it, because RawTherapee builds
+            without libheif — including the 5.13 Windows build — cannot read HEIC)
 metadata:
   openclaw:
     homepage: https://github.com/MrC-Sinclair/rawtherapee-photo-skills
@@ -101,7 +104,7 @@ RAW / JPG / HEIC
 | Format    | Extensions       | Notes                                            |
 | --------- | ---------------- | ------------------------------------------------ |
 | JPEG      | `.jpg`, `.jpeg`  | Processed directly with Pillow                   |
-| HEIC/HEIF | `.heic`, `.heif` | Requires `pip install pillow-heif` (optional)    |
+| HEIC/HEIF | `.heic`, `.heif` | Requires `pillow-heif` (required — see below)    |
 
 > **Note**: RAW files provide full 16-bit editing latitude for maximum quality. JPG/HEIC are 8-bit —
 > grading range is more limited, exposure adjustments should be more conservative.
@@ -136,7 +139,7 @@ source .venv/bin/activate
 
 ```bash
 python3 -c "import rawpy; from PIL import Image; import numpy; print('✓ Core dependencies installed')"
-python3 -c "from pillow_heif import register_heif_opener; print('✓ HEIC/HEIF support available')" 2>/dev/null || echo "ℹ HEIC/HEIF support not installed (optional: pip install pillow-heif)"
+python3 -c "from pillow_heif import register_heif_opener; print('✓ HEIC/HEIF support available')" || echo "✗ HEIC/HEIF support MISSING (required for .heic/.heif: pip install pillow-heif)"
 ```
 
 ## Config Files
@@ -352,7 +355,7 @@ python3 photo-grader/scripts/grade.py grading_params.json --no-auto-match
 | `params_json`   | Grading parameters JSON                              | required     |
 | `--raw-dir`     | RAW files directory (only needed for relative paths) | from config  |
 | `--uniform-dir` | Apply first param set to ALL files in directory      | —            |
-| `--output`      | Output directory                                     | from config  |
+| `--output`      | Output directory (required for real renders only)     | from config  |
 | `--quality`     | JPEG quality (1-100)                                 | 95           |
 | `--workers`     | Parallel workers                                     | auto (max 8) |
 | `--overwrite`   | Overwrite existing files                             | off          |
@@ -375,7 +378,8 @@ All standard Lightroom parameters are supported with intelligent mapping:
 
 - ✅ Exposure (stop-based)
 - ✅ Contrast
-- ✅ Highlights / Shadows / Whites / Blacks
+- ✅ Highlights / Shadows / Whites / Blacks (RT has no dedicated whites/blacks keys — `grade.py`
+  folds them into the tone-curve endpoints instead of dropping them)
 - ✅ White Balance (temperature/tint)
 - ✅ Vibrance & Saturation
 - ✅ Parametric Tone Curve
@@ -388,7 +392,11 @@ All standard Lightroom parameters are supported with intelligent mapping:
 
 **RawTherapee-Specific Features**
 
-- **Auto-Matched Tone Curve** (RT `[Exposure] HistogramMatching`): Matches in-camera JPEG tone for ~50 camera models
+- **Auto-Matched Tone Curve** (RT `[Exposure] HistogramMatching`): Matches in-camera JPEG tone for ~50 camera models.
+  It *replaces* `[Exposure] Curve`, so `grade.py` skips it (with one stderr notice) whenever a parameter set
+  defines `tone_curve`, `whites` or `blacks` — otherwise the custom curve would be silently overwritten.
+  `highlights` / `shadows` do not trigger this: they map to `HighlightCompr` / `ShadowCompr`, which
+  coexists with histogram matching.
 - **Lens Correction**: Automatic via lensfun database
 - **Fast Export Mode**: Skip heavy modules for speed
 - **16-bit Output**: TIFF/PNG at 16-bit depth
@@ -396,6 +404,21 @@ All standard Lightroom parameters are supported with intelligent mapping:
 Grading parameters JSON top-level fields: `file` / `style` / `basic` / `tone_curve` / `hsl` /
 `color_grading` / `detail` / `effects` / `raw` — see the `rt_map_*()` functions in
 `photo-grader/scripts/grade.py` for the authoritative field list.
+
+Two fields are **list / flat shaped** and easy to get wrong — a nested object used to do nothing at
+all; since 1.0.5 `grade.py` reports it on stderr and ignores it:
+
+```json
+{
+  "file": "/abs/path/DSC_0001.CR2",
+  "style": "warm",
+  "hsl": [{"channel": "blue", "saturation": -40}, {"channel": "green", "hue": 20}],
+  "color_grading": {"shadow_hue": 220, "shadow_saturation": 30,
+                    "highlight_hue": 40, "highlight_saturation": 25}
+}
+```
+
+(`hsl.channel` ∈ red / orange / yellow / green / aqua / blue / purple / magenta.)
 
 **HSL / Color Grading mapping targets (RT 5.13 verified)**
 
@@ -433,6 +456,8 @@ Stem-based matching works across formats:
 
 - If `grading_params.json` says `DSC_0001.NEF` but the actual file is `DSC_0001.CR2`, it will still be found
 - Also matches JPG and HEIC files: `IMG_0001.HEIC` or `DSC_0001.JPG`
+- HEIC inputs are transcoded to 16-bit TIFF with `pillow_heif` before the RawTherapee CLI runs: the
+  5.13 Windows build is compiled without libheif and exits rc=2 when handed a `.heic` directly
 
 ## photo-previewer
 

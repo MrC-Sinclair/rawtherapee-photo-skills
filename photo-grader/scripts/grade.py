@@ -16,8 +16,16 @@ Supported Camera RAW Formats:
 
 Also supports: JPEG (.jpg/.jpeg), Apple HEIC/HEIF (.heic/.heif)
 
+HEIC/HEIF note:
+    RawTherapee builds compiled without libheif (the 5.13 Windows build is one
+    of them) cannot decode HEIC at all — they report "is not one of the selected
+    parsed extensions". grade.py therefore transcodes HEIC/HEIF to TIFF with
+    pillow-heif before handing the file to RawTherapee, so HEIC still works but
+    requires `pip install pillow-heif`.
+
 Dependencies:
     RawTherapee CLI (rawtherapee-cli)
+    pillow-heif (only for HEIC/HEIF input)
     tomllib (stdlib 3.11+) / tomli (<3.11)
 
     Check & install: bash scripts/setup_deps.sh
@@ -32,6 +40,7 @@ Usage:
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -196,6 +205,17 @@ def _rt_cli_install_hint():
     return "Install: apt install rawtherapee-cli (Debian/Ubuntu) / dnf install RawTherapee (Fedora/RHEL)"
 
 
+# Engine version reported by `rawtherapee-cli -h`, e.g. "5.13". Written into the
+# [Version] AppVersion of generated PP3s instead of a hard-coded value.
+_RT_VERSION = None
+
+
+def _parse_rt_version(text):
+    """Extract the engine version from `rawtherapee-cli -h` output."""
+    match = re.search(r"rawtherapee,\s*version\s+([0-9][\w.]*)", text, re.IGNORECASE)
+    return match.group(1) if match else None
+
+
 def _validate_rt_cli_executable(rt):
     """Run a lightweight smoke test to ensure rawtherapee-cli can actually start."""
     try:
@@ -206,6 +226,8 @@ def _validate_rt_cli_executable(rt):
     output = f"{result.stdout}\n{result.stderr}"
     output_lower = output.lower()
     if "rawtherapee, version" in output_lower and "command line" in output_lower:
+        global _RT_VERSION
+        _RT_VERSION = _parse_rt_version(output)
         return True, output.splitlines()[0] if output.splitlines() else "RawTherapee CLI"
 
     if result.returncode == 133 or "sigtrap" in output_lower or "trace trap" in output_lower:
@@ -298,8 +320,8 @@ def rt_map_tone_compression(pp3, basic):
             pp3[("Shadows & Highlights", "Enabled")] = True
             pp3[("Shadows & Highlights", "Shadows")] = round(rt_clamp(-sh, 0, 100))
 
-    # Whites/Blacks adjustment via tone curve points
-    # (No direct RT key; handled by rt_map_tone_curve if tone_curve params exist)
+    # Whites/Blacks have no dedicated RT keys; rt_map_tone_curve folds them into
+    # the [Exposure] Curve endpoints (build_pp3 passes `basic` through).
 
 
 def rt_map_whitebalance(pp3, basic):
@@ -333,6 +355,14 @@ def rt_map_whitebalance(pp3, basic):
     elif abs(tint) >= 0.5:
         pp3[("White Balance", "Green")] = round(rt_clamp_f(1.0 + tint * 0.005, 0.5, 2.0), 3)
 
+    # RT only honours explicit Temperature/Green when the WB tool is enabled and
+    # its setting is Custom; otherwise the keys below are silently ignored and
+    # the camera/auto white balance is used (verified on RT 5.13: a CR2 rendered
+    # byte-identical with and without Temperature=3000 until both keys were set).
+    if ("White Balance", "Temperature") in pp3 or ("White Balance", "Green") in pp3:
+        pp3[("White Balance", "Enabled")] = True
+        pp3[("White Balance", "Setting")] = "Custom"
+
 
 def rt_map_vibrance_saturation(pp3, basic):
     """Map LR vibrance/saturation → RT Vibrance.Pastels/Saturated."""
@@ -346,37 +376,45 @@ def rt_map_vibrance_saturation(pp3, basic):
         pp3[("Vibrance", "Saturated")] = round(sat * 0.7)
 
 
-def rt_map_tone_curve(pp3, tc_params):
-    """Map LR 4-point S-curve → RT Exposure.Curve (Control Cage for RT 5.10)."""
-    hl = tc_params.get("highlights", 0)
-    lt = tc_params.get("lights", 0)
-    dk = tc_params.get("darks", 0)
-    sh = tc_params.get("shadows", 0)
-    if all(abs(v) < 0.5 for v in [hl, lt, dk, sh]):
+def rt_map_tone_curve(pp3, tc_params, basic=None):
+    """Map LR tonal controls → RT [Exposure] Curve (FCT_CubicSpline, 0-1 coords).
+
+    RT parses Exposure.Curve as "type;x1;y1;x2;y2;...;" — type 3 is
+    FCT_CubicSpline and every coordinate is normalised to 0..1, which is the
+    format RT's own bundled profiles use. The previous 0..999 integer list was
+    silently discarded by RT 5.13, making the whole tonal section a no-op.
+
+    ``basic`` optionally supplies Lightroom's whites/blacks: RT has no dedicated
+    keys for them, so they are folded into the curve endpoints here instead of
+    being dropped on the floor.
+    """
+    tc = tc_params or {}
+    bs = basic or {}
+    hl = tc.get("highlights", 0)
+    lt = tc.get("lights", 0)
+    dk = tc.get("darks", 0)
+    sh = tc.get("shadows", 0)
+    whites = bs.get("whites", 0)
+    blacks = bs.get("blacks", 0)
+    if all(abs(v) < 0.5 for v in [hl, lt, dk, sh, whites, blacks]):
         return
 
-    # RT 5.10 uses simple semicolon-separated values (Control Cage), not CubicSpline
-    base_y = [0, 111, 222, 333, 444, 555, 666, 777, 888, 999]
-    hl_adj = hl / 100.0 * 80
-    lt_adj = lt / 100.0 * 40
-    dk_adj = dk / 100.0 * 40
-    sh_adj = sh / 100.0 * 80
+    xs = (0.0, 0.25, 0.5, 0.75, 1.0)
+    ys = [0.0, 0.25, 0.5, 0.75, 1.0]
+    # Shadows raise the toe and highlights lift the shoulder; darks/lights act
+    # on the mid-quarter points. Slider range ±100 → up to ±0.10 curve units.
+    ys[0] += (sh * 0.0002) + (blacks * 0.0002)
+    ys[1] += (sh * 0.0010) + (dk * 0.0005) + (blacks * 0.0006)
+    ys[2] += (dk * 0.0005) + (lt * 0.0005)
+    ys[3] += (lt * 0.0008) + (hl * 0.0008) + (whites * 0.0006)
+    ys[4] += (hl * 0.0002) + (whites * 0.0003)
 
-    y = [
-        rt_clamp(base_y[0] + sh_adj * 150),
-        rt_clamp(base_y[1] + sh_adj * 60),
-        rt_clamp(base_y[2] + dk_adj * 30),
-        rt_clamp(base_y[3] + dk_adj * 50),
-        rt_clamp(base_y[4]),
-        rt_clamp(base_y[5]),
-        rt_clamp(base_y[6] + lt_adj * 50),
-        rt_clamp(base_y[7] + lt_adj * 30),
-        rt_clamp(base_y[8] + hl_adj * 60),
-        rt_clamp(base_y[9] + hl_adj * 150),
-    ]
-    pts_str = ";".join(f"{rt_clamp(v, 0, 999)}" for v in y)
-    # RT 5.10: simple format, no CubicSpline prefix
-    pp3[("Exposure", "Curve")] = pts_str
+    ys = [rt_clamp_f(v, 0.0, 1.0) for v in ys]
+    for i in range(1, len(ys)):  # keep the curve monotonic
+        ys[i] = max(ys[i], ys[i - 1])
+
+    curve = "3;" + "".join(f"{x:.5f};{y:.5f};" for x, y in zip(xs, ys))
+    pp3[("Exposure", "Curve")] = curve
     pp3[("Exposure", "CurveMode")] = "Standard"
 
 
@@ -462,12 +500,23 @@ def rt_map_hsl(pp3, hsl_list):
     if not hsl_list:
         return
 
+    if not isinstance(hsl_list, list):
+        print(
+            "  ⚠️  hsl must be a LIST of objects, e.g. "
+            '[{"channel": "blue", "saturation": -40}] — got '
+            f"{type(hsl_list).__name__}; the value is ignored.",
+            file=sys.stderr,
+        )
+        return
+
     collected = {"hue": {}, "saturation": {}, "luminance": {}}
+    unknown_channels = set()
     for item in hsl_list:
         if not isinstance(item, dict):
             continue
         channel = str(item.get("channel", "")).lower()
         if channel not in _HSL_CHANNEL_HUE:
+            unknown_channels.add(channel or "(missing 'channel' key)")
             continue
         for kind in collected:
             try:
@@ -482,6 +531,15 @@ def rt_map_hsl(pp3, hsl_list):
         "SCurve": _hsl_flatcurve("saturation", collected["saturation"]),
         "VCurve": _hsl_flatcurve("luminance", collected["luminance"]),
     }
+    if unknown_channels:
+        print(
+            "  ⚠️  hsl: unknown channel(s) "
+            + ", ".join(sorted(unknown_channels))
+            + " — valid: " + ", ".join(sorted(_HSL_CHANNEL_HUE))
+            + "; those entries are ignored.",
+            file=sys.stderr,
+        )
+
     if not any(curves.values()):
         return
 
@@ -567,6 +625,19 @@ def rt_map_color_grading(pp3, cg_params):
     if not cg_params:
         return
 
+    nested = sorted(
+        key for key, value in cg_params.items()
+        if not str(key).startswith("_") and isinstance(value, (dict, list))
+    )
+    if nested:
+        print(
+            "  ⚠️  color_grading: nested value(s) "
+            + ", ".join(nested)
+            + ' — expected FLAT keys, e.g. {"shadow_hue": 220, "shadow_saturation": 30, '
+              '"highlight_hue": 40, "highlight_saturation": 25}; ignored.',
+            file=sys.stderr,
+        )
+
     zones = {
         "shadow": (_cg_float(cg_params.get("shadow_hue")), _cg_float(cg_params.get("shadow_saturation"))),
         "midtone": (_cg_float(cg_params.get("midtone_hue")), _cg_float(cg_params.get("midtone_saturation"))),
@@ -639,21 +710,22 @@ def rt_map_vignette(pp3, effects):
 
 
 def rt_map_grain(pp3, effects):
-    """Map LR grain → RT FilmSimulation (approximation).
+    """LR grain is not mappable: RT 5.13 has no film-grain module.
 
-    RawTherapee has no built-in film grain module. As an approximation,
-    we configure a subtle grain effect via the [FilmSimulation] section
-    if a film simulation CLUT is available. Otherwise this is a no-op.
+    [FilmSimulation] would need a CLUT file this skill does not ship, so a
+    non-zero grain_amount is reported on stderr and dropped instead of being
+    written as a "_Comment" entry that never reaches the generated PP3.
     """
     if not effects:
         return
     grain = effects.get("grain_amount", 0)
     if grain < 1:
         return
-    # Store grain params for potential post-processing; RT itself doesn't
-    # have a grain module. The FilmSimulation section requires a CLUT file.
-    # We leave a comment-style entry that RT will ignore.
-    pp3[("_Comment", "FilmGrain")] = f"LR grain_amount={round(grain * 6)}; RT has no grain module"
+    print(
+        f"  ⚠️  grain_amount={grain} (size={effects.get('grain_size', 0)}) is not supported: "
+        "RawTherapee 5.13 has no film-grain module — the value is ignored.",
+        file=sys.stderr,
+    )
 
 
 def rt_map_raw(pp3, raw_params):
@@ -697,11 +769,33 @@ def rt_map_raw(pp3, raw_params):
                 pp3[("Exposure", "Compensation")] = round(rt_clamp_f(bright_val, -5.0, 5.0), 3)
 
 
-def build_pp3(params, style="graded", config=None):
+_AUTO_MATCHED_WARNED = False
+
+
+def _warn_auto_matched_override():
+    """Tell the user once that a custom curve disabled Auto-Matched Curve."""
+    global _AUTO_MATCHED_WARNED
+    if _AUTO_MATCHED_WARNED:
+        return
+    _AUTO_MATCHED_WARNED = True
+    print(
+        "ℹ️  Auto-Matched Curve (histogram matching) is skipped for parameter sets "
+        "that define tone_curve / whites / blacks — otherwise RawTherapee would "
+        "replace the custom tone curve with the matched one and the adjustment "
+        "would be silently lost.",
+        file=sys.stderr,
+    )
+
+
+def build_pp3(params, style="graded", config=None, engine_version=None):
     """Convert a single LR parameter set to a RawTherapee PP3 file content string.
 
     All rt_map_* functions populate pp3 with (section, key) → value entries,
     which are then serialized to INI format with correct RT section names.
+
+    ``engine_version`` is the version reported by rawtherapee-cli, written into
+    [Version] AppVersion; when unknown the section is omitted (RT then applies
+    its own defaults, exactly like the profiles shipped with RawTherapee).
     """
     cfg = config or {}
     pp3 = {}
@@ -719,7 +813,7 @@ def build_pp3(params, style="graded", config=None):
     rt_map_tone_compression(pp3, basic)
     rt_map_whitebalance(pp3, basic)
     rt_map_vibrance_saturation(pp3, basic)
-    rt_map_tone_curve(pp3, tc)
+    rt_map_tone_curve(pp3, tc, basic)
     rt_map_hsl(pp3, hsl)
     rt_map_color_grading(pp3, cg)
     rt_map_sharpening(pp3, detail)
@@ -767,7 +861,24 @@ def build_pp3(params, style="graded", config=None):
     # curve has already been computed and skips the expensive matching step.
     # See pixls.us discussion w/ Ingo Weyrich (RT dev) for the authoritative
     # explanation.
-    if cfg.get("auto_matched_curve", True):
+    # A user-supplied curve always wins. RT's HistogramMatching *replaces*
+    # `[Exposure] Curve` with the in-camera-JPEG-matched curve, so leaving it on
+    # while also writing a custom Curve silently discards the entire tone_curve /
+    # highlights / shadows / whites / blacks request (verified on RT 5.13:
+    # MAE 0.000 with HistogramMatching=1, 6.32 with HistogramMatching=0).
+    _tone_curve = params.get("tone_curve") or {}
+    _basic = params.get("basic") or {}
+    # highlights/shadows are excluded on purpose: they map to HighlightCompr /
+    # ShadowCompr (their own PP3 keys), so they coexist fine with histogram
+    # matching. Only the parameters that actually write [Exposure] Curve — the
+    # tone_curve knobs plus whites/blacks, which rt_map_tone_curve folds into
+    # that curve — conflict with it.
+    _has_custom_curve = any(v for v in _tone_curve.values()) or any(
+        _basic.get(k) for k in ("whites", "blacks")
+    )
+    if _has_custom_curve:
+        _warn_auto_matched_override()
+    elif cfg.get("auto_matched_curve", True):
         pp3[("Exposure", "HistogramMatching")] = True
         pp3[("Exposure", "CurveFromHistogramMatching")] = False
 
@@ -801,11 +912,13 @@ def build_pp3(params, style="graded", config=None):
     lines = []
     written_sections = set()
 
-    # Always write Version header first
-    lines.append("[Version]")
-    lines.append("AppVersion=5.11")
-    lines.append("Version=333")
-    lines.append("")
+    # Version header: written only when the engine version is known. RT's own
+    # bundled profiles omit [Version] entirely, and the old hard-coded
+    # "AppVersion=5.11 / Version=333" made every sidecar claim the wrong engine.
+    if engine_version:
+        lines.append("[Version]")
+        lines.append(f"AppVersion={engine_version}")
+        lines.append("")
 
     def _fmt_val(val):
         # RawTherapee expects 1/0 for booleans, not Python True/False
@@ -837,6 +950,43 @@ def build_pp3(params, style="graded", config=None):
     safe_style = "".join(c if c.isalnum() or c in "-_" else "_" for c in style_tag)[:20]
 
     return "\n".join(lines), safe_style
+
+
+# Formats the RawTherapee build itself cannot decode. The 5.13 Windows build
+# ships without libheif, so HEIC/HEIF inputs are rejected outright:
+#   "[...] is not one of the selected parsed extensions. Image skipped."
+# They are transcoded through pillow-heif (the decoder photo-toolkit already
+# uses for these files) so the documented HEIC support actually works.
+_RT_UNREADABLE_EXTENSIONS = {".heic", ".heif"}
+
+
+def _prepare_rt_input(raw_path, work_dir):
+    """Return (path RawTherapee can read, temp file to clean up or None).
+
+    HEIC/HEIF is transcoded to 16-bit-capable TIFF under ``work_dir`` keeping
+    the original stem, so RT's "<stem>.jpg" output naming — and the rename step
+    that follows it — keeps working unchanged.
+    """
+    if raw_path.suffix.lower() not in _RT_UNREADABLE_EXTENSIONS:
+        return raw_path, None
+
+    try:
+        from PIL import Image
+        import pillow_heif
+
+        pillow_heif.register_heif_opener()
+    except ImportError as e:
+        raise RuntimeError(
+            f"{raw_path.name}: HEIC/HEIF inputs need pillow-heif, which is not available ({e}). "
+            "Install it (pip install pillow-heif) or convert the file first with "
+            "photo-toolkit/convert.py."
+        ) from e
+
+    work_dir.mkdir(parents=True, exist_ok=True)
+    tiff_path = work_dir / f"{raw_path.stem}.tif"
+    with Image.open(raw_path) as im:
+        im.convert("RGB").save(tiff_path, format="TIFF", compression="tiff_deflate")
+    return tiff_path, tiff_path
 
 
 def _compute_output_name(raw_path, safe_style, raw_root=None):
@@ -878,7 +1028,9 @@ def grade_single_file(
         style = params.get("style", "graded")
         safe_style = "".join(c if c.isalnum() or c in "_-" else "_" for c in style)[:20]
 
-        pp3_content, safe_style = build_pp3(params, style=safe_style, config=config)
+        pp3_content, safe_style = build_pp3(
+            params, style=safe_style, config=config, engine_version=_RT_VERSION
+        )
 
         # PP3-only mode
         if pp3_only and pp3_output_dir:
@@ -904,8 +1056,14 @@ def grade_single_file(
             elapsed = time.monotonic() - start
             return (raw_name, True, f"🔍 Dry-run: PP3 written to {tmp_pp3.name} ({len(pp3_content)} bytes)", elapsed)
 
-        # Write PP3 to temp file
-        tmp_pp3 = output_dir / f"__rt_tmp_{raw_path.stem}__.pp3"
+        # Per-task scratch directory. RawTherapee always names its render after
+        # the input stem, and the temp PP3/TIFF files are stem-based too, so two
+        # styles of the same source file running concurrently (16 workers by
+        # default) would otherwise overwrite each other's PP3/TIFF and race on
+        # the same render path — one job dies with "Error saving to ...".
+        task_tmp = output_dir / "__rt_tmp__" / f"{raw_path.stem}_{safe_style}_{os.getpid()}_{int(time.monotonic() * 1e6)}"
+        task_tmp.mkdir(parents=True, exist_ok=True)
+        tmp_pp3 = task_tmp / f"{raw_path.stem}.pp3"
         with open(tmp_pp3, "w", encoding="utf-8") as f:
             f.write(pp3_content)
 
@@ -913,49 +1071,48 @@ def grade_single_file(
         cli = [_RT_CLI]
         if fast_export:
             cli += ["-f"]
-        cli += ["-o", str(output_dir)]
+        cli += ["-o", str(task_tmp)]
         cli += [f"-j{quality}"]  # RT 5.10: -j95 not -j 95
         cli += ["-p", str(tmp_pp3)]
         if overwrite:
             cli += ["-Y"]
-        cli += ["-c", str(raw_path)]  # Must be last
+        # RT builds without libheif cannot read HEIC/HEIF at all, so those
+        # inputs are transcoded to TIFF first (see _prepare_rt_input). Both the
+        # temp PP3 and this TIFF live in the per-task scratch dir above.
+        rt_input, tmp_input = _prepare_rt_input(raw_path, task_tmp)
+        cli += ["-c", str(rt_input)]  # Must be last
 
         result = subprocess.run(cli, capture_output=True, text=True, timeout=300)
 
-        tmp_pp3.unlink(missing_ok=True)
-
         if result.returncode != 0:
+            shutil.rmtree(task_tmp, ignore_errors=True)
             stderr_tail = result.stderr[-500:] if len(result.stderr) > 500 else result.stderr
             elapsed = time.monotonic() - start
             return (raw_name, False, f"✗ {raw_name}: RT error (code {result.returncode})\n{stderr_tail}", elapsed)
 
-        # RT writes the render into output_dir under the ORIGINAL stem
+        # RT writes the render into its scratch dir under the ORIGINAL stem
         # (e.g. "<stem>.jpg") for both RAW and JPG input; the styled
         # "<stem>_<style>.jpg" name is applied by this script afterwards.
         # The source file must never be moved.
-        same_stem = output_dir / f"{raw_path.stem}.jpg"
-        output_jpg = jpg_path
-        if same_stem.exists() and same_stem.resolve() != raw_path.resolve():
-            import shutil
-
-            if jpg_path.exists() and jpg_path.resolve() != same_stem.resolve() and not overwrite:
-                # Keep the previous render, drop this run's duplicate render.
-                same_stem.unlink(missing_ok=True)
-            else:
-                os.replace(str(same_stem), str(jpg_path))
+        produced = task_tmp / f"{raw_path.stem}.jpg"
+        if produced.exists():
+            os.replace(str(produced), str(jpg_path))
         else:
-            styled = list(output_dir.glob(f"{raw_path.stem}_*.jpg"))
-            if styled:
-                output_jpg = styled[0]
+            leftovers = sorted(task_tmp.glob("*.jpg"))
+            if leftovers:
+                os.replace(str(leftovers[0]), str(jpg_path))
             else:
                 # RT occasionally outputs into the input directory (rare);
                 # move only if that file is NOT the source file itself.
                 alt_jpg = raw_path.parent / f"{raw_path.stem}.jpg"
                 if alt_jpg.exists() and alt_jpg.resolve() != raw_path.resolve():
-                    import shutil
-
                     shutil.move(str(alt_jpg), str(jpg_path))
-                    output_jpg = jpg_path
+        shutil.rmtree(task_tmp, ignore_errors=True)
+        try:
+            task_tmp.parent.rmdir()  # drop __rt_tmp__ once the last job is done
+        except OSError:
+            pass
+        output_jpg = jpg_path
 
         elapsed = time.monotonic() - start
         if output_jpg.exists():
@@ -1175,8 +1332,13 @@ def load_grading_params(json_path):
     if not path.exists():
         print(f"❌ Parameter file not found: {path}", file=sys.stderr)
         sys.exit(1)
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except json.JSONDecodeError as e:
+        print(f"❌ Invalid JSON in parameter file: {path}", file=sys.stderr)
+        print(f"   Line {e.lineno}, column {e.colno}: {e.msg}", file=sys.stderr)
+        sys.exit(1)
 
     entries = []
     if isinstance(data, list):
@@ -1318,12 +1480,14 @@ Examples:
     else:
         raw_dir = Path(raw_dir_raw).expanduser().resolve() if raw_dir_raw else None
 
-    if not output_raw:
+    # --dry-run / --pp3-only never write a rendered JPG, so demanding --output
+    # from them was needless friction.
+    if not output_raw and not (args.dry_run or args.pp3_only):
         parser.error("--output is required. Provide it as an argument or set 'output_dir' in config.toml")
     if not 1 <= quality <= 100:
         print("Error: --quality must be between 1 and 100", file=sys.stderr)
         sys.exit(1)
-    output_dir = Path(output_raw).expanduser().resolve()
+    output_dir = Path(output_raw).expanduser().resolve() if output_raw else None
 
     all_params = load_grading_params(args.params_json)
     print(f"📋 Loaded {len(all_params)} grading parameter set(s)")
@@ -1388,7 +1552,8 @@ Examples:
             print(f"   RAW files: from absolute paths in params")
         print(f"   Output:  {output_dir}\n")
 
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
 
     total_start = time.monotonic()
     success_count = 0

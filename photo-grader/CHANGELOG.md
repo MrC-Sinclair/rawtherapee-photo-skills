@@ -4,6 +4,67 @@ All notable changes to this skill will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This skill carries its own version per [strategy C in RELEASING.md](../RELEASING.md).
 
+## [1.0.5] - 2026-09-18
+
+### Fixed
+
+- **`scripts/grade.py`: white balance never reached the engine.** `rt_map_whitebalance()` wrote
+  `[White Balance] Temperature` / `Green` but never enabled the tool or set `Setting=Custom`, so RT
+  fell back to the camera white balance. A CR2 rendered with and without `temperature_kelvin: 3000`
+  was byte-identical (MAE 0.000); with `Enabled=1` + `Setting=Custom` the same pair differs by 12.99.
+- **`scripts/grade.py`: the tone curve was overridden by auto-matched curve.** The FlatCurve /
+  FCT_CubicSpline encoding added in 1.0.4 is correct, but `HistogramMatching=1` — written whenever
+  `config.auto_matched_curve = true`, which is the shipped default — makes RT replace
+  `[Exposure] Curve` with its histogram-matched curve, so `tone_curve` (and `whites` / `blacks`,
+  which are folded into that curve) still produced a 0.00 diff. `build_pp3()` now skips
+  `HistogramMatching` when the parameter set defines `tone_curve`, `whites` or `blacks`, and prints
+  one stderr notice through `_warn_auto_matched_override()`. `highlights` / `shadows` are excluded
+  from that test on purpose: they map to `HighlightCompr` / `ShadowCompr` (`[Exposure]`, plus
+  `[HLRecovery]` / `[Shadows & Highlights]` for negative values), which coexists with histogram
+  matching, so those parameter sets keep the matched base tone.
+- **`scripts/grade.py`: `whites` / `blacks` had no consumer.** RT exposes no keys for them; they are
+  now folded into the tone-curve endpoints in `rt_map_tone_curve()` (`±0.0002` at x=0, `±0.0006` at
+  x=0.25, `±0.0006` at x=0.75, `±0.0003` at x=1.0 per slider unit, curve kept monotonic) instead of
+  being dropped silently.
+- **`scripts/grade.py`: HEIC input failed outright.** The RawTherapee 5.13 Windows build has no
+  libheif and returns rc=2 on `.heic`, while the docs advertised HEIC support. Inputs are now
+  transcoded to TIFF with `pillow_heif` (`_prepare_rt_input()`) before the CLI runs; the requirement
+  is declared in `requirements.txt` and documented as mandatory in `SKILL.md`.
+- **`scripts/grade.py`: parallel jobs on one source file clobbered each other.** The temp pp3, the
+  HEIC→TIFF intermediate and the `-o` output all used one shared name, so concurrent styles for the
+  same file failed with `Error saving to …` (or produced the wrong image). Each job now renders in
+  its own `output_dir/__rt_tmp__/<stem>_<style>_<pid>_<ts>/` scratch directory, publishes results
+  with `os.replace()` (with the `alt_jpg` retry), and `rmtree`s the scratch dir on failure.
+- **`scripts/grade.py`: `AppVersion` was hard-coded to 5.11** (`build_pp3()`), which is wrong on any
+  other engine version. It is now parsed from `rawtherapee-cli -h` (`_parse_rt_version()`,
+  `_RT_VERSION`) and written only when known.
+- **`scripts/grade.py`: malformed parameter JSON crashed with a bare traceback.** It now reports the
+  file, the reason and the offending line, and exits with a non-zero status.
+- **`scripts/grade.py`: `--dry-run` and `--pp3-only` still required `--output`,** even though no
+  image is written. `--output` is only mandatory for real renders now.
+- **`scripts/grade.py`: wrong-shaped `hsl` / `color_grading` input was accepted silently.** `hsl` must
+  be a *list* of `{"channel": "blue", "saturation": -40}` objects (channel ∈ red/orange/yellow/green/
+  aqua/blue/purple/magenta) and `color_grading` uses *flat* keys (`shadow_hue`, `shadow_saturation`,
+  `midtone_*`, `highlight_*`). Both `{"hsl": {"blue": {"saturation": -80}}}` and
+  `{"color_grading": {"shadow": {"hue": 220, "saturation": 30}}}` rendered without error and without
+  any visible change. A non-list `hsl`, an unknown `hsl` channel and a nested `color_grading` value are
+  now each reported on stderr together with the expected schema, and ignored.
+
+### Verified
+
+- A/B CLI render regression on RT 5.13, Canon EOS 2000D CR2 (same source, one parameter set each):
+  baseline vs `tone_curve` 27.77, vs `whites: 80 / blacks: -60` 35.41, vs
+  `highlights: 60 / shadows: 60` 2.54, vs `temperature_kelvin: 3000` 41.24 — all non-zero, i.e. all
+  of them now reach the engine. HEIC pair (`heic1` vs `heic2`) 39.90.
+- pp3 inspection: `AppVersion=5.13`, curve-bearing styles carry `Curve=3;…` + `CurveMode=Standard`
+  and no `HistogramMatching`, compression-only styles carry `HistogramMatching=1` plus
+  `HighlightCompr` / `ShadowCompr`.
+- Parallel batches (6 and 7 jobs, one source file, mixed styles) finish rc=0 with no collisions and no
+  `__rt_tmp__` leftovers.
+- Schema guards (Canon 2000D CR2): `hsl` as a dict → 1 warning, MAE 0.00; `hsl` channel `blu` → 1
+  warning listing the valid channels; nested `color_grading` → 1 warning; the correct list/flat form →
+  no warning, MAE 10.49 (hsl blue −80 / green +60 + shadow & highlight colour grading).
+
 ## [1.0.4] - 2026-09-17
 
 ### Fixed
