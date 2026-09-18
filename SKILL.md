@@ -1,6 +1,6 @@
-﻿---
+---
 name: rawtherapee-photo-skills
-version: 1.0.6
+version: 1.0.7
 description: |
   AI photography post-processing toolkit (photo-toolkit + photo-grader + photo-previewer
   merged into one skill):

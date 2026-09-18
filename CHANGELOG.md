@@ -8,6 +8,18 @@ This skill bundles two upstream ClawHub skills, `photo-toolkit` and `photo-grade
 ClawHub / Marvis treat one folder as one skill. The per-module history lives in
 `photo-toolkit/CHANGELOG.md` and `photo-grader/CHANGELOG.md`.
 
+## [1.0.7] - 2026-09-18
+
+Marvis could not import the skill at all: the frontmatter files started with a UTF-8 BOM.
+
+### Fixed
+
+- **`SKILL.md`, `skill.yaml`, `VERSION`: a UTF-8 BOM (EF BB BF) broke frontmatter detection.**
+  Marvis only treats the first line as frontmatter when it is exactly `---`; a BOM decodes to
+  U+FEFF, so line 1 read as `\ufeff---` and the import aborted with "SKILL.md 解析失败" (1003),
+  while `/` could not list the skill. All three files are now stored without a BOM; their
+  contents are otherwise byte-identical to 1.0.6.
+
 ## [1.0.6] - 2026-09-18
 
 HEIC depth is no longer thrown away, and the dependency notes now say what the code actually does.
