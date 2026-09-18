@@ -11,3 +11,8 @@ tomli>=1.1.0 ; python_version < "3.11"
 # HEIC → TIFF with pillow_heif before calling the CLI.
 # NOTE: GPLv2 licensed
 pillow-heif>=0.13.0
+
+# Required for 10/12-bit HEIC/HEIF: the transcode then writes a 16-bit RGB TIFF
+# (ICC profile preserved) instead of flattening the extra depth to 8-bit.
+# Without it those inputs are still graded — at 8-bit, with a stderr notice.
+tifffile>=2024.1.30

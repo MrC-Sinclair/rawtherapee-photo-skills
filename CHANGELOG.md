@@ -8,6 +8,42 @@ This skill bundles two upstream ClawHub skills, `photo-toolkit` and `photo-grade
 ClawHub / Marvis treat one folder as one skill. The per-module history lives in
 `photo-toolkit/CHANGELOG.md` and `photo-grader/CHANGELOG.md`.
 
+## [1.0.6] - 2026-09-18
+
+HEIC depth is no longer thrown away, and the dependency notes now say what the code actually does.
+
+### Fixed
+
+- **`photo-grader/scripts/grade.py`: 10/12-bit HEIC was flattened to 8-bit.** `_prepare_rt_input()`
+  transcoded every HEIC through Pillow's HEIF plugin, which only ever decodes 8 bits per channel,
+  while its own docstring promised a "16-bit-capable TIFF". It now decodes through
+  `pillow_heif.open_heif(convert_hdr_to_8bit=False)`; when that yields `uint16` (10/12-bit source) the
+  pixels are written as 16-bit RGB TIFF with `tifffile`, and the embedded ICC profile is carried over
+  into tag 34675. 8-bit sources keep the Pillow path unchanged, and a missing `tifffile` degrades to
+  the previous 8-bit behaviour with a stderr notice instead of failing the run.
+- **`photo-grader/requirements.txt`: `tifffile` was missing.** The 10/12-bit path had no declared
+  dependency; it is now listed with the non-8-bit rationale.
+- **`README.md`: `pillow-heif` was called optional and rawpy's path looked avoidable.** rawpy backs
+  every RAW decode in `convert.py` — it is not an optional shortcut — and `pillow-heif` is required
+  for any HEIC/HEIF input to `convert.py` / `grade.py`.
+
+### Changed
+
+- Documentation now states the HDR caveat plainly: an iPhone "HDR" gain map is never applied, so RT
+  receives the base image. A 10/12-bit HEIC therefore keeps its per-channel depth but not its HDR
+  highlights.
+
+### Verified
+
+- Synthetic 10-bit HEIC (with and without ICC): the transcode now reports
+  `BitsPerSample=(16, 16, 16)` with a 588-byte ICC tag, where the old path produced 8-bit.
+- RawTherapee 5.13 renders the 16-bit TIFF and the 8-bit TIFF both at rc=0; `grade.py` runs a 2-file
+  10-bit HEIC batch end to end with 0 errors.
+- Narrow-range 10-bit shadow data (8 distinct 10-bit levels): the old path collapsed it to 3 levels,
+  the new path keeps 8. After RT's 8-bit JPEG export the visible difference is small on a
+  normal-range image (MAE 0.67/255) and still modest under a strong shadow lift (MAE 1.15/255) —
+  the depth is preserved through grading, not after the 8-bit export.
+
 ## [1.0.5] - 2026-09-18
 
 The tonal section is honest now — every slider it advertises either reaches the engine or is

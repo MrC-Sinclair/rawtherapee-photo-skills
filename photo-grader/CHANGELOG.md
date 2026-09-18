@@ -4,6 +4,18 @@ All notable changes to this skill will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This skill carries its own version per [strategy C in RELEASING.md](../RELEASING.md).
 
+## [1.0.6] - 2026-09-18
+
+### Fixed
+
+- **`scripts/grade.py`: 10/12-bit HEIC lost its depth in the transcode.** `_prepare_rt_input()`
+  decoded through Pillow's HEIF plugin, which always flattens to 8 bits per channel, despite a
+  docstring advertising a "16-bit-capable TIFF". It now uses
+  `pillow_heif.open_heif(convert_hdr_to_8bit=False)`; `uint16` results are written as 16-bit RGB TIFF
+  with `tifffile`, ICC profile preserved in tag 34675. 8-bit HEIC keeps the Pillow path, and without
+  `tifffile` the old 8-bit behaviour is used with a stderr notice rather than an error.
+- **`requirements.txt`: `tifffile` was missing**, so the 10/12-bit path had no declared dependency.
+
 ## [1.0.5] - 2026-09-18
 
 ### Fixed

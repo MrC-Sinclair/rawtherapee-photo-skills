@@ -19,13 +19,18 @@ Also supports: JPEG (.jpg/.jpeg), Apple HEIC/HEIF (.heic/.heif)
 HEIC/HEIF note:
     RawTherapee builds compiled without libheif (the 5.13 Windows build is one
     of them) cannot decode HEIC at all — they report "is not one of the selected
-    parsed extensions". grade.py therefore transcodes HEIC/HEIF to TIFF with
-    pillow-heif before handing the file to RawTherapee, so HEIC still works but
-    requires `pip install pillow-heif`.
+    parsed extensions". grade.py therefore transcodes HEIC/HEIF to TIFF before
+    handing the file to RawTherapee. Sources carrying more than 8 bits per
+    channel (iPhone 10/12-bit HEIC) are written losslessly as 16-bit RGB TIFF
+    with tifffile, ICC profile carried over; 8-bit sources take the plain Pillow
+    path. RawTherapee always receives the base image: an iPhone "HDR" gain map
+    is never applied, so a 10/12-bit file keeps its per-channel depth but not its
+    HDR highlights.
 
 Dependencies:
     RawTherapee CLI (rawtherapee-cli)
     pillow-heif (only for HEIC/HEIF input)
+    tifffile (only for 10/12-bit HEIC/HEIF; without it those fall back to 8-bit)
     tomllib (stdlib 3.11+) / tomli (<3.11)
 
     Check & install: bash scripts/setup_deps.sh
@@ -956,34 +961,80 @@ def build_pp3(params, style="graded", config=None, engine_version=None):
 # ships without libheif, so HEIC/HEIF inputs are rejected outright:
 #   "[...] is not one of the selected parsed extensions. Image skipped."
 # They are transcoded through pillow-heif (the decoder photo-toolkit already
-# uses for these files) so the documented HEIC support actually works.
+# uses for these files) so the documented HEIC support actually works; sources
+# with more than 8 bits per channel keep their depth via tifffile.
 _RT_UNREADABLE_EXTENSIONS = {".heic", ".heif"}
 
 
 def _prepare_rt_input(raw_path, work_dir):
     """Return (path RawTherapee can read, temp file to clean up or None).
 
-    HEIC/HEIF is transcoded to 16-bit-capable TIFF under ``work_dir`` keeping
-    the original stem, so RT's "<stem>.jpg" output naming — and the rename step
-    that follows it — keeps working unchanged.
+    HEIC/HEIF is transcoded under ``work_dir`` keeping the original stem, so RT's
+    "<stem>.jpg" output naming — and the rename step that follows it — keeps
+    working unchanged.
+
+    Depth is preserved where the source has it: HEIC may carry 10/12-bit samples
+    and pillow-heif decodes those as 16-bit arrays, so they are written as 16-bit
+    RGB TIFF (tifffile, embedded ICC profile carried over in tag 34675) instead of
+    being flattened to 8-bit. 8-bit sources keep taking the plain Pillow path.
+    RawTherapee always receives the base image only — an iPhone "HDR" gain map is
+    never applied.
     """
     if raw_path.suffix.lower() not in _RT_UNREADABLE_EXTENSIONS:
         return raw_path, None
 
     try:
-        from PIL import Image
+        import numpy as np
         import pillow_heif
-
-        pillow_heif.register_heif_opener()
     except ImportError as e:
         raise RuntimeError(
-            f"{raw_path.name}: HEIC/HEIF inputs need pillow-heif, which is not available ({e}). "
-            "Install it (pip install pillow-heif) or convert the file first with "
-            "photo-toolkit/convert.py."
+            f"{raw_path.name}: HEIC/HEIF inputs need pillow-heif (with numpy), which is not "
+            f"available ({e}). Install it (pip install pillow-heif) or convert the file first "
+            "with photo-toolkit/convert.py."
         ) from e
 
     work_dir.mkdir(parents=True, exist_ok=True)
     tiff_path = work_dir / f"{raw_path.stem}.tif"
+
+    # Pillow's HEIF plugin always flattens to 8-bit, so read the pixels through
+    # pillow-heif's own API instead; 10/12-bit sources come back as uint16.
+    pixels = None
+    icc = b""
+    try:
+        heif = pillow_heif.open_heif(str(raw_path), convert_hdr_to_8bit=False)
+        pixels = np.asarray(heif[0])
+        icc = bytes(heif.info.get("icc_profile") or b"")
+    except Exception as e:
+        print(
+            f"{raw_path.name}: native HEIC decode failed ({e}); falling back to 8-bit.",
+            file=sys.stderr,
+        )
+
+    if pixels is not None and pixels.dtype == np.uint16:
+        try:
+            import tifffile
+        except ImportError:
+            print(
+                f"{raw_path.name}: this HEIC carries more than 8-bit samples; writing it "
+                "losslessly needs tifffile (pip install tifffile). Falling back to 8-bit.",
+                file=sys.stderr,
+            )
+        else:
+            if pixels.ndim == 3 and pixels.shape[2] >= 3:
+                pixels, photometric = pixels[:, :, :3], "rgb"
+            elif pixels.ndim == 3:
+                pixels, photometric = pixels[:, :, 0], "minisblack"
+            else:
+                photometric = "minisblack"
+            extra = {"extratags": [(34675, 7, len(icc), icc, True)]} if icc else {}
+            tifffile.imwrite(
+                tiff_path, pixels, photometric=photometric, compression="deflate", **extra
+            )
+            return tiff_path, tiff_path
+
+    pillow_heif.register_heif_opener()
+    from PIL import Image
+
     with Image.open(raw_path) as im:
         im.convert("RGB").save(tiff_path, format="TIFF", compression="tiff_deflate")
     return tiff_path, tiff_path

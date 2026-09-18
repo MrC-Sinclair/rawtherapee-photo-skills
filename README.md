@@ -38,8 +38,11 @@ RAW / JPG / HEIC
 - **RawTherapee CLI** — required by `grade.py` (color grading). Not required for the other modules.
 - **FFmpeg** — only needed by `assemble.py` (video assembly).
 - **libraw** — system package (RedHat: `dnf install LibRaw-devel` / Debian: `apt-get install libraw-dev`).
-- **Python** — `rawpy`, `pillow`, `numpy` (required); `pillow-heif` (optional, HEIC/HEIF); `tomli` (Python < 3.11).
-  Per-module dependency lists are in each module's `requirements.txt`.
+- **Python** — `rawpy`, `pillow`, `numpy` (required by `convert.py`, which uses rawpy for every RAW
+  decode — not an optional path); `pillow-heif` (required for HEIC/HEIF input to
+  `convert.py` / `grade.py` — RawTherapee 5.13 cannot decode HEIC itself); `tifffile` (only for
+  10/12-bit HEIC — keeps that depth in the TIFF handed to RawTherapee instead of falling back to
+  8-bit); `tomli` (Python < 3.11). Per-module dependency lists are in each module's `requirements.txt`.
 
 On Windows, external CLIs are usually not on `PATH` — put their absolute paths into `config.toml`.
 

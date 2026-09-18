@@ -89,6 +89,25 @@ else
     }
 fi
 
+# ── Check pillow-heif (HEIC/HEIF input) ───────────────────────
+if python3 -c "import pillow_heif" 2>/dev/null; then
+    echo -e "  ${GREEN}✓${NC} pillow-heif (HEIC/HEIF 输入需要)"
+else
+    echo -e "  ${YELLOW}⚠${NC} pillow-heif — 未安装（HEIC/HEIF 输入需要）"
+    echo "       安装中..."
+    pip3 install pillow-heif && echo -e "  ${GREEN}✓${NC} pillow-heif 安装完成" || {
+        echo -e "  ${RED}✗${NC} pillow-heif 安装失败，请手动运行: pip3 install pillow-heif"
+        ALL_OK=false
+    }
+fi
+
+# ── Check tifffile (10/12-bit HEIC/HEIF) ──────────────────────
+if python3 -c "import tifffile" 2>/dev/null; then
+    echo -e "  ${GREEN}✓${NC} tifffile (10/12-bit HEIC 保位深)"
+else
+    echo -e "  ${YELLOW}⚠${NC} tifffile — 未安装：10/12-bit HEIC 会退化为 8-bit，8-bit/RAW/JPG 不受影响"
+fi
+
 # ── Summary ──────────────────────────────────────────────────
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

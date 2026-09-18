@@ -1,6 +1,6 @@
 ﻿---
 name: rawtherapee-photo-skills
-version: 1.0.5
+version: 1.0.6
 description: |
   AI photography post-processing toolkit (photo-toolkit + photo-grader + photo-previewer
   merged into one skill):
@@ -42,7 +42,9 @@ description: |
     Python: rawpy, pillow, numpy, tomli (Python < 3.11),
             pillow-heif (HEIC/HEIF support: photo-toolkit decodes HEIC with it, and
             photo-grader transcodes HEIC→TIFF with it, because RawTherapee builds
-            without libheif — including the 5.13 Windows build — cannot read HEIC)
+            without libheif — including the 5.13 Windows build — cannot read HEIC),
+            tifffile (only for 10/12-bit HEIC/HEIF: photo-grader then writes a 16-bit
+            RGB TIFF instead of flattening the extra depth to 8-bit)
 metadata:
   openclaw:
     homepage: https://github.com/MrC-Sinclair/rawtherapee-photo-skills
@@ -104,10 +106,12 @@ RAW / JPG / HEIC
 | Format    | Extensions       | Notes                                            |
 | --------- | ---------------- | ------------------------------------------------ |
 | JPEG      | `.jpg`, `.jpeg`  | Processed directly with Pillow                   |
-| HEIC/HEIF | `.heic`, `.heif` | Requires `pillow-heif` (required — see below)    |
+| HEIC/HEIF | `.heic`, `.heif` | Requires `pillow-heif`; 10/12-bit needs `tifffile` |
 
-> **Note**: RAW files provide full 16-bit editing latitude for maximum quality. JPG/HEIC are 8-bit —
-> grading range is more limited, exposure adjustments should be more conservative.
+> **Note**: RAW files provide full 16-bit editing latitude for maximum quality. JPG is 8-bit, and so
+> is 8-bit HEIC; 10/12-bit HEIC keeps its per-channel depth through the transcode (see below).
+> Every export is 8-bit JPG, so grading range stays narrower than RAW — keep exposure adjustments
+> conservative either way.
 
 ## Dependencies & Setup
 
@@ -456,8 +460,11 @@ Stem-based matching works across formats:
 
 - If `grading_params.json` says `DSC_0001.NEF` but the actual file is `DSC_0001.CR2`, it will still be found
 - Also matches JPG and HEIC files: `IMG_0001.HEIC` or `DSC_0001.JPG`
-- HEIC inputs are transcoded to 16-bit TIFF with `pillow_heif` before the RawTherapee CLI runs: the
-  5.13 Windows build is compiled without libheif and exits rc=2 when handed a `.heic` directly
+- HEIC inputs are transcoded to TIFF before the RawTherapee CLI runs: the 5.13 Windows build is
+  compiled without libheif and exits rc=2 when handed a `.heic` directly. 10/12-bit HEIC is written
+  as 16-bit RGB TIFF via `tifffile` (ICC profile preserved in tag 34675, no depth loss); 8-bit HEIC
+  goes through `pillow_heif`/Pillow. RT always receives the base image — an iPhone "HDR" gain map
+  is not applied, so a 10/12-bit file keeps its depth but not its HDR highlights
 
 ## photo-previewer
 
