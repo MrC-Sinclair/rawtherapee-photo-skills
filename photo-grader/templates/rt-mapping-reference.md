@@ -18,8 +18,8 @@
 | vibrance           | Vibrance.Enabled/Pastels                                  | x0.9 缩放                                            |
 | saturation         | Vibrance.Enabled/Saturated                                | x0.7 缩放                                            |
 | tone_curve         | Exposure.Curve/CurveMode                                  | 10 点 CubicSpline 曲线                               |
-| hsl (8 channels)   | HSV Equalizer.Enabled/HueCurve/SatCurve/ValCurve          | 通道映射到色相环位置，生成 CubicSpline 曲线          |
-| color_grading      | Color Toning.Enabled/Method/Shadows*\*/Highlights*\*      | Splitlr 方法；midtone → AutoCorrection               |
+| hsl (8 channels)   | HSV Equalizer.Enabled/HCurve/SCurve/VCurve                | 通道映射到色相环位置（红 0°/橙 30°/黄 60°/绿 120°/青 180°/蓝 240°/紫 270°/品红 300°），生成 FlatCurve 曲线（类型 1；恒等线 y=0.5） |
+| color_grading      | ColorToning.Enabled/Method=Splitco/Redlow·Greenlow·Bluelow·Redmed·Greenmed·Bluemed·Redhigh·Greenhigh·Bluehigh + Strength | 色相+饱和 → 每区 RGB 滑块（hsv_to_rgb(h,1,1)×sat）；Strength=100 使染色强度 = saturation/200 |
 | sharpen            | Sharpening.Enabled/Method/DeconvRadius/DeconvAmount       | RL Deconvolution；amount x1.5，radius × 0.75         |
 | noise_reduction    | Directional Pyramid Denoising.Enabled/Luma/Chroma/Ldetail | Lab 方法；gamma 1.4                                  |
 | vignette_amount    | Vignetting Correction.Amount/Radius/Strength              | abs(x) × 1.5                                         |
@@ -35,8 +35,8 @@
 | [White Balance]                 | Temperature, Green, Equal                                         | 白平衡              |
 | [Vibrance]                      | Enabled, Pastels, Saturated                                       | 自然饱和度          |
 | [Color Management]              | ToneCurve, OutputBPC                                              | 色彩管理            |
-| [HSV Equalizer]                 | HueCurve, SatCurve, ValCurve                                      | HSV 曲线调整        |
-| [Color Toning]                  | Method, Shadows_Hue, Highlights_Hue                               | 色调分离            |
+| [HSV Equalizer]                 | HCurve, SCurve, VCurve（真键，非 HueCurve/SatCurve/ValCurve）      | HSV 曲线调整        |
+| [ColorToning]                   | Method=Splitco, Redlow..Bluehigh, Strength, Balance               | 色调分离            |
 | [Sharpening]                    | Method, DeconvRadius, DeconvAmount                                | 锐化（RL 反卷积）   |
 | [Directional Pyramid Denoising] | Enabled, Luma, Chroma, Ldetail                                    | 降噪（方向金字塔）  |
 | [Vignetting Correction]         | Amount, Radius, Strength                                          | 暗角校正            |
@@ -44,6 +44,28 @@
 | [LensProfile]                   | LcMode, UseDistortion                                             | 镜头校正（lensfun） |
 | [RAW]                           | HotPixelFilter, CA_AutoCorrect, DenoiseBlack                      | RAW 预处理          |
 | [Output]                        | Format, Quality                                                   | 输出格式            |
+
+### 曲线编码（实测校验，RT 5.13）
+
+| 段.键 | 值格式 | 要点 |
+| ----- | ------ | ---- |
+| HSV Equalizer.HCurve / SCurve / VCurve | `类型;x1;y1;lt1;rt1;x2;y2;lt2;rt2;…` | 类型 1 = FCT_MinMaxCPoints（0 = 线性，等同关闭）；x/y/切点均为 0~1 浮点；恒等线 y=0.5；控制点 y 全为 0.5 时曲线被判 FCT_Empty（等于未开启）；切点统一 0.35 |
+| ColorToning.Redlow…Bluehigh | 整数滑块 -100..100 | Splitco 用 `mixerToCurve`：值 ÷100 得 RGB 三元组 → 归一化求色相 → 染色强度 sat=(max−min)/2；某分区三通道全 0 则分区不染色 |
+
+- 曲线 `Enabled` 键：RT 默认即为 1，映射层仅在至少一条曲线非恒等时才写入该段，避免产生无意义的 PP3 差异。
+- ColorToning 的 `Balance` 仅 `Splitlr` 方法使用；LR 的 per-zone luminance（阴影/中间调/高光三档明度）在 `Splitco` 下无对应字段，映射层**不写入并在 stderr 明示已忽略**，不静默丢弃。
+
+### 已知引擎保真差异（RT 5.13 实测，非映射层 bug）
+
+| 项 | 差异 | 实测 |
+| -- | ---- | ---- |
+| 明度曲线阻尼 | `vCurve` 额外乘 `(1-(1-s)^4)`，灰像素（s=0）完全不受明度曲线影响 | 纯灰梯度图上明度用例 diff = 0.00 |
+| 明度曲线无量程加倍 | `vCurve` 无 `*2` 系数（`sCurve`/`hCurve` 有），故 y=0.0 在线性工作空间把 V 减半，输出端仅 −27%（0.5^(1/2.2)） | lum −100 → ΔV ≈ −27%，lum +100 → ΔV ≈ +4.6 % |
+| 工作空间放大 | 色相/饱和/明度曲线在线性化工作空间取值，输出 sRGB 后旋转量被放大 | 标称 +30° 的色相控制点实测峰值 Δhue ≈ +48~+70° |
+| 稀疏插值带宽 | 8 锚点色相曲线经 FlatCurve 插值后有效带宽约 ±60° | 改为每 5° 钉点后收敛至 220–250°（±15° 级） |
+| 染色强度受 Strength 约束 | `strProtect = pow(Strength/100, 0.4)`，默认 50 ⇒ 0.758 | 不写 Strength 与写 50 逐像素一致；写 100 后各用例 diff ×1.22~1.32 |
+| 分区权重不等 | `rlo=strProtect`（阴影）、`rlm=1.5×`（中间调）、`rlh=2.2×`（高光） | 同滑块的染色强度随明度区递增 |
+| 染色为逐通道加性 | `toningsmh()` 的 `corr = 20000×val×kl×strProtect`，非 HSV 混合 | 分区平均 ΔRGB 方向与目标色相一致，幅度随亮度连续变化 |
 
 ### 参数换算示例
 
@@ -56,3 +78,7 @@
 | sharpen: amount 80   | Sharpening.DeconvAmount: 120     | x1.5              |
 | noise_reduction: 40  | DPD.Luma: 56, Chroma: 35         | Lab 方法          |
 | vignette_amount: -40 | Vignetting Correction.Amount: 60 | abs(x) × 1.5      |
+| hsl blue hue +100    | HSV Equalizer.HCurve: `1;0;0.5;0.35;0.35;…;0.6667;0.5417;0.35;0.35;…;1;0.5;…` | 标称 +30°（实测因工作空间放大至 +52°） |
+| color_grading 阴影 hue 220 / sat 40 | ColorToning.Redlow=0, Greenlow=13, Bluelow=40 | hsv(220°,1,1)×40 |
+| color_grading 中间调 hue 40 / sat 60 | ColorToning.Redmed=60, Greenmed=40, Bluemed=0 | hsv(40°,1,1)×60 |
+| color_grading 高光 hue 300 / sat 50 | ColorToning.Redhigh=50, Greenhigh=0, Bluehigh=50 | hsv(300°,1,1)×50 |

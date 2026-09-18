@@ -156,7 +156,16 @@ Examples:
     try:
         for i, frame in enumerate(frames):
             link_name = f"frame_{i:06d}.jpg"
-            os.symlink(str(frame), os.path.join(tmp_dir, link_name))
+            link_path = os.path.join(tmp_dir, link_name)
+            try:
+                os.symlink(str(frame), link_path)
+            except OSError:
+                # Windows without developer mode / admin rights cannot create
+                # symlinks: fall back to a hard link, then to a real copy.
+                try:
+                    os.link(str(frame), link_path)
+                except OSError:
+                    shutil.copy2(str(frame), link_path)
 
         input_pattern = os.path.join(tmp_dir, "frame_%06d.jpg")
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -168,6 +177,11 @@ Examples:
             str(fps),
             "-i",
             input_pattern,
+            # yuv420p requires even width/height; frames produced by
+            # convert.py --size can be odd (e.g. 640x427 from 1280x854),
+            # which makes libx264 fail outright. Round down to even.
+            "-vf",
+            "scale=trunc(iw/2)*2:trunc(ih/2)*2",
             "-c:v",
             "libx264",
             "-crf",

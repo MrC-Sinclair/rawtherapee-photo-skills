@@ -438,6 +438,8 @@ Examples:
     layout_count = None
     if args.layout_config:
         lc_path = Path(args.layout_config).expanduser().resolve()
+        if not lc_path.exists():
+            print(f"   ⚠️  Layout config not found, ignored: {lc_path}", file=sys.stderr)
         if lc_path.exists():
             try:
                 with open(lc_path, "r", encoding="utf-8") as f:

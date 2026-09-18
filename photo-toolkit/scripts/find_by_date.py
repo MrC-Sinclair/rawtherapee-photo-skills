@@ -562,12 +562,17 @@ Examples:
     from_date = None
     to_date = None
 
-    if args.date:
-        target_date = parse_date_arg(args.date)
-    if args.date_from:
-        from_date = parse_date_arg(args.date_from)
-    if args.date_to:
-        to_date = parse_date_arg(args.date_to)
+    try:
+        if args.date:
+            target_date = parse_date_arg(args.date)
+        if args.date_from:
+            from_date = parse_date_arg(args.date_from)
+        if args.date_to:
+            to_date = parse_date_arg(args.date_to)
+    except ValueError as e:
+        # Unparseable date argument: report cleanly instead of a traceback.
+        print(f"❌ {e}", file=sys.stderr)
+        sys.exit(2)
 
     raw_files = find_raw_files(input_path, args.recursive)
     if not raw_files:

@@ -126,7 +126,7 @@ Examples:
         """,
     )
     parser.add_argument("input", help="Directory containing JPG frames")
-    parser.add_argument("--window", type=int, default=None, help="Sliding window size, odd number (default: 11)")
+    parser.add_argument("--window", type=int, default=None, help="Sliding window size, odd (even values are rounded up; default: 11)")
     parser.add_argument("--quality", type=int, default=None, help="Output JPEG quality (default: 95)")
     parser.add_argument("--config", type=str, default=None, help="Path to config.toml")
     parser.add_argument("--dry-run", action="store_true", help="Analyze without modifying files")

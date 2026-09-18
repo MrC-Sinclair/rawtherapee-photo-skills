@@ -1,3 +1,14 @@
+---
+AIGC:
+    Label: "1"
+    ContentProducer: 001191440300708461136T1XGW3
+    ProduceID: 40c8af801da8629c99b9e5611c578fea_5abc62f8b1e111f197a3525400248c00
+    ReservedCode1: MqbrTkswHOsSw6AYZtdjSJ0Nq8/6S4wWSmB038905J0k5oTE/bN7L69ZtbRlT6IDbI09n6VxmB2Ls3KgemixPNKYvBCU7BLxWA1EMwrAqbUDCwCVGhcf0JQzjtkv3XW9Z4c/1b3slJhwT5JQziUNVGbLPGUo81MmpYeImnsh+fbDtKHriPfRzj6UvSk=
+    ContentPropagator: 001191440300708461136T1XGW3
+    PropagateID: 40c8af801da8629c99b9e5611c578fea_5abc62f8b1e111f197a3525400248c00
+    ReservedCode2: MqbrTkswHOsSw6AYZtdjSJ0Nq8/6S4wWSmB038905J0k5oTE/bN7L69ZtbRlT6IDbI09n6VxmB2Ls3KgemixPNKYvBCU7BLxWA1EMwrAqbUDCwCVGhcf0JQzjtkv3XW9Z4c/1b3slJhwT5JQziUNVGbLPGUo81MmpYeImnsh+fbDtKHriPfRzj6UvSk=
+---
+
 # rawtherapee-photo-skills
 
 AI photography post-processing toolkit packaged as a single installable skill (for Marvis / Claw-style
@@ -69,3 +80,4 @@ Merged and repackaged from [konanok/photo-skills](https://github.com/konanok/pho
 (photo-toolkit + photo-grader + photo-previewer), which is distributed under **MIT-0**.
 This repackaging keeps the same license terms; RawTherapee itself is a separate project and is
 only invoked as an external CLI.
+*（内容由AI生成，仅供参考）*

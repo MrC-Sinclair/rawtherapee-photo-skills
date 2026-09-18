@@ -166,12 +166,10 @@ def build_session_manifest(session_dir: Path | str) -> dict:
     entry are silently ignored (they will not be exposed via the HTTP
     routes either).
 
-    Limitation: cell discovery uses ``rpartition('_')`` once on graded
-    filenames, so style names containing underscores combined with stems
-    lacking underscores (e.g. params stem ``IMG`` with style
-    ``warm_spring`` and graded file ``IMG_warm_spring.jpg``) may
-    misattribute the trailing segment as the style and miss the match.
-    Encode style names without underscores to avoid this.
+    Cell discovery matches graded filenames against params by explicit
+    ``_<style>`` suffix instead of splitting the name on ``_``, so style
+    names containing underscores (e.g. ``warm_spring``) are handled, and
+    uniform-mode params without a ``file`` field still produce cells.
 
     Returns:
         ``{"session_id": str, "styles": [str, ...],
@@ -196,13 +194,33 @@ def build_session_manifest(session_dir: Path | str) -> dict:
     if isinstance(params, dict):
         params = [params]
 
-    # Index actual graded files by (stem, style). Both keys are exactly what
-    # match_graded_to_style returns from the on-disk filenames.
-    actual: dict[tuple[str, str | None], str] = {}
-    for p in graded_dir.iterdir():
-        if p.is_file() and p.suffix.lower() in (".jpg", ".jpeg"):
-            stem, style = match_graded_to_style(p.name)
-            actual[(stem, style)] = p.name
+    # Index graded files by name. We must NOT split names on '_' to recover the
+    # style: style names may legitimately contain underscores (e.g.
+    # ``tl_uniform``), which makes rpartition('_') mis-split the name. Instead
+    # each params entry claims its file by explicit suffix matching.
+    graded_files = [
+        p for p in graded_dir.iterdir() if p.is_file() and p.suffix.lower() in (".jpg", ".jpeg")
+    ]
+    claimed: set[str] = set()
+
+    def _claim(stem: str, style: str) -> str | None:
+        """Return the graded filename belonging to (stem, style), or None.
+
+        Primary match: ``<stem>_<style>.<ext>``. Fallback: any unclaimed file
+        ending in ``_<style>.<ext>`` whose remaining prefix ends with ``stem``
+        (covers prefixed names like ``001_<stem>_<style>.jpg``).
+        """
+        suffix = f"_{style}"
+        for p in graded_files:
+            if p.name not in claimed and p.stem == f"{stem}_{style}":
+                return p.name
+        for p in graded_files:
+            if p.name in claimed or not p.stem.endswith(suffix):
+                continue
+            prefix = p.stem[: -len(suffix)]
+            if stem and (prefix == stem or prefix.endswith("_" + stem)):
+                return p.name
+        return None
 
     cells_by_style: dict[str, list[dict]] = {}
     for item in params:
@@ -211,23 +229,46 @@ def build_session_manifest(session_dir: Path | str) -> dict:
         if not style:
             continue
         stem = Path(file_ref).stem
-        graded_filename = actual.get((stem, style))
-        # Subdirectory-prefix variant: photo-grader may have written
-        # "001_DSC_0001_<style>.jpg" while params reference "DSC_0001.NEF".
-        # Fall back to suffix-matching the actual stems.
-        if graded_filename is None:
-            for (a_stem, a_style), a_name in actual.items():
-                if a_style == style and a_stem.endswith("_" + stem):
-                    graded_filename = a_name
-                    break
-        cells_by_style.setdefault(style, []).append(
-            {
-                "stem": stem,
-                "graded_filename": graded_filename or f"{stem}_{style}.jpg",
-                "graded_missing": graded_filename is None,
-                "original_path": file_ref,
-            }
-        )
+
+        if stem:
+            graded_filename = _claim(stem, style)
+            if graded_filename:
+                claimed.add(graded_filename)
+            cells_by_style.setdefault(style, []).append(
+                {
+                    "stem": stem,
+                    "graded_filename": graded_filename or f"{stem}_{style}.jpg",
+                    "graded_missing": graded_filename is None,
+                    "original_path": str(_find_thumbnail(session_path, stem) or file_ref),
+                }
+            )
+            continue
+
+        # Uniform-mode params carry no ``file`` field: claim every remaining
+        # file for this style and recover each stem from its filename.
+        matched = [p for p in graded_files if p.name not in claimed and p.stem.endswith(f"_{style}")]
+        if not matched:
+            cells_by_style.setdefault(style, []).append(
+                {
+                    "stem": "",
+                    "graded_filename": f"_{style}.jpg",
+                    "graded_missing": True,
+                    "original_path": file_ref,
+                }
+            )
+            continue
+        for p in matched:
+            claimed.add(p.name)
+            cell_stem = p.stem[: -(len(style) + 1)]
+            original = _find_thumbnail(session_path, cell_stem)
+            cells_by_style.setdefault(style, []).append(
+                {
+                    "stem": cell_stem,
+                    "graded_filename": p.name,
+                    "graded_missing": False,
+                    "original_path": str(original) if original else file_ref,
+                }
+            )
 
     return {
         "session_id": session_path.name,
@@ -815,9 +856,18 @@ def _find_thumbnail(session_path: Path, stem: str) -> Path | None:
                     candidate = thumbs_dir / (stem + ext)
                     if candidate.is_file():
                         return candidate
-                return None
+                break
     except (json.JSONDecodeError, OSError):
         pass
+
+    # Fallback: session-local ``originals/`` — uniform-mode params carry no
+    # ``file`` field, so the thumbnails/ lookup above cannot resolve them.
+    if stem:
+        for ext in (".jpg", ".jpeg", ".png"):
+            candidate = session_path / "originals" / (stem + ext)
+            if candidate.is_file():
+                return candidate
+
     return None
 
 

@@ -1,6 +1,6 @@
----
+﻿---
 name: rawtherapee-photo-skills
-version: 1.0.3
+version: 1.0.4
 description: |
   AI photography post-processing toolkit (photo-toolkit + photo-grader + photo-previewer
   merged into one skill):
@@ -163,9 +163,10 @@ python3 photo-toolkit/scripts/convert.py ~/data/RAW
 # Custom settings
 python3 photo-toolkit/scripts/convert.py ~/data/RAW ~/data/output/thumbnails --size 2048 --quality 95
 
-# Read file list from stdin (pipe from find_by_date.py)
+# Read file list from stdin (pipe from find_by_date.py). In --from-stdin mode
+# the positional argument is the OUTPUT directory (no input dir is scanned).
 python3 photo-toolkit/scripts/find_by_date.py --date today ~/data/RAW | \
-    python3 photo-toolkit/scripts/convert.py --from-stdin
+    python3 photo-toolkit/scripts/convert.py --from-stdin ~/data/thumbs
 
 # With report output
 python3 photo-toolkit/scripts/convert.py ~/data/RAW --report /tmp/convert_report.json
@@ -209,7 +210,7 @@ python3 photo-toolkit/scripts/find_by_date.py --list-dates
 
 # Timelapse: detect sequences with regular intervals, exclude casual shots
 python3 photo-toolkit/scripts/find_by_date.py ~/data/RAW --timelapse
-python3 photo-toolkit/scripts/find_by_date.py ~/data/RAW --timelapse --copy-to ~/output/frames
+python3 photo-toolkit/scripts/find_by_date.py ~/data/RAW --timelapse --output ~/data/timelapse.json
 python3 photo-toolkit/scripts/find_by_date.py ~/data/RAW --timelapse --min-sequence 50
 ```
 
@@ -322,8 +323,8 @@ python3 photo-grader/scripts/grade.py grading_params.json --output ~/Photos/grad
 python3 photo-grader/scripts/grade.py grading_params.json \
     --raw-dir ~/Photos/RAW --output ~/Photos/graded
 
-# Full resolution
-python3 photo-grader/scripts/grade.py grading_params.json --no-resize
+# Full resolution (grade.py always writes at source resolution)
+python3 photo-grader/scripts/grade.py grading_params.json --output ~/Photos/graded
 
 # Uniform mode: apply one parameter set to ALL files in a directory
 # (useful for timelapse or batch-processing with identical settings)
@@ -395,6 +396,26 @@ All standard Lightroom parameters are supported with intelligent mapping:
 Grading parameters JSON top-level fields: `file` / `style` / `basic` / `tone_curve` / `hsl` /
 `color_grading` / `detail` / `effects` / `raw` — see the `rt_map_*()` functions in
 `photo-grader/scripts/grade.py` for the authoritative field list.
+
+**HSL / Color Grading mapping targets (RT 5.13 verified)**
+
+- `hsl` → `[HSV Equalizer]` `HCurve` / `SCurve` / `VCurve` (real keys — not `HueCurve`/`SatCurve`/
+  `ValCurve`), values as FlatCurve strings; control points sit at the eight LR hue positions.
+- `color_grading` → `[ColorToning]` (no space in the section name) `Method=Splitco` with
+  `Redlow/Greenlow/Bluelow`, `Redmed/Greenmed/Bluemed`, `Redhigh/Greenhigh/Bluehigh` and
+  `Strength=100`. RT drops unknown sections/keys silently, so any edit here must be re-verified with
+  an A/B CLI render (`np.abs(case - baseline).mean()`, diff 0 = still ignored).
+
+**Engine fidelity notes (measured, not mapping bugs)**
+
+- The vCurve is damped by `(1-(1-s)^4)` — neutral grey is unaffected by HSL luminance.
+- vCurve has no ×2 range factor (sCurve/hCurve do), so luminance moves roughly half as far as the
+  specification suggests.
+- Hue/saturation curves act in the linearised working space, so hue rotations render larger than
+  nominal (+30° nominal measures up to ~+70° on saturated bands).
+- Eight-anchor hue curves interpolate over roughly ±60°; per-5° anchors tighten this to ~±15°.
+- ColorToning tint strength is scaled by `pow(Strength/100, 0.4)` and by per-zone weights
+  (1.0 / 1.5 / 2.2 for shadows / midtones / highlights).
 
 ### Cross-Format Support
 
@@ -501,7 +522,7 @@ python3 photo-toolkit/scripts/layout_preview.py ~/output/graded \
 ```bash
 # Step 1: Detect & extract timelapse frames (exclude casual shots)
 python3 photo-toolkit/scripts/find_by_date.py ~/Photos/RAW \
-    --timelapse --copy-to ~/output/timelapse_frames
+    --timelapse --output ~/output/timelapse.json
 
 # Step 2: Uniform grade — one parameter set for all frames
 python3 photo-grader/scripts/grade.py ~/output/grading_params.json \

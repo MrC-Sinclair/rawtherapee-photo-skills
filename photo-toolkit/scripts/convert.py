@@ -196,9 +196,17 @@ def process_file(raw_path, output_dir, size, quality, overwrite=False, preserve_
             elapsed = time.monotonic() - start
             return (raw_name, True, f"Skipped (exists): {jpg_name}", elapsed)
 
-        # ── Smart skip: symlink small JPG/HEIC originals ─────────
-        is_non_raw = ext_lower in (JPG_EXTENSIONS | HEIC_EXTENSIONS)
-        if is_non_raw and per_image_budget_bytes > 0:
+        # ── Smart skip: symlink small JPG originals ──────────────
+        # HEIC is deliberately excluded: linking a .heic source under a .jpg
+        # name yields a file downstream tools cannot decode. HEIC always goes
+        # through the pillow-heif decode path below.
+        is_non_raw = ext_lower in JPG_EXTENSIONS
+        # When source and output are the same file (--overwrite on a flat JPG
+        # folder) the smart-skip path must be disabled: linking/copying a file
+        # onto itself raises SameFileError. Fall through to a real in-place
+        # re-encode instead (handled atomically at save time).
+        in_place = raw_path.resolve() == jpg_path.resolve()
+        if is_non_raw and not in_place and per_image_budget_bytes > 0:
             file_size = raw_path.stat().st_size
             if file_size <= per_image_budget_bytes:
                 # Original is small enough — symlink instead of re-encoding
@@ -278,7 +286,19 @@ def process_file(raw_path, output_dir, size, quality, overwrite=False, preserve_
         if exif_bytes:
             save_kwargs["exif"] = exif_bytes
 
-        image.save(jpg_path, **save_kwargs)
+        if jpg_path.exists() and raw_path.resolve() == jpg_path.resolve():
+            # In-place re-encode (source JPG == output JPG, e.g. --overwrite on
+            # a flat JPG folder): Pillow refuses to overwrite the file it has
+            # open, so write a sibling temp file and replace atomically.
+            tmp_jpg = jpg_path.with_name(jpg_path.stem + ".__convert_tmp__.jpg")
+            try:
+                image.save(tmp_jpg, **save_kwargs)
+                os.replace(str(tmp_jpg), str(jpg_path))
+            finally:
+                if tmp_jpg.exists():
+                    tmp_jpg.unlink()
+        else:
+            image.save(jpg_path, **save_kwargs)
 
         elapsed = time.monotonic() - start
         file_size_kb = jpg_path.stat().st_size / 1024
@@ -376,6 +396,13 @@ Examples:
     cfg = load_config(args.config)
 
     input_raw = args.input or cfg.get("raw_dir") or cfg.get("input_dir")
+    # In --from-stdin mode the file list comes from stdin, so there is no input
+    # directory to scan: the first positional argument is the OUTPUT directory.
+    # (Without this, `find_by_date.py ... | convert.py --from-stdin out_dir`
+    # mis-reads out_dir as the input path and then fails path validation.)
+    if args.from_stdin and args.input and not args.output_dir:
+        args.output_dir, args.input = args.input, None
+        input_raw = None
     if not input_raw and not args.from_stdin:
         parser.error("input path is required. Provide it as an argument or set 'raw_dir' in config.toml")
 

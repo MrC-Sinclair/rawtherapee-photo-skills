@@ -17,7 +17,7 @@ output_dir = ""
 jpeg_quality = 95
 
 # 输出图片最大边长（像素），超过此尺寸会等比缩小
-# 设为 0 表示保持原始分辨率（grader 调色时建议 0 或传 --no-resize）
+# 设为 0 表示保持原始分辨率（仅影响 toolkit 缩略图；grader 输出始终为原始分辨率）
 max_size = 1200
 
 # 是否递归搜索子目录中的照片（相机上传通常是多层目录，建议开启）
@@ -40,7 +40,7 @@ workers = 0
 thumbnail_budget_mb = 50
 
 # ── photo-grader 专用 ───────────────────────────────────────
-# grader 调色时建议通过 CLI 传 --no-resize 保持全尺寸输出
+# grader 输出始终为原始分辨率，无需额外 CLI 参数
 # jpeg_quality = 95 (已在公共配置中设置，与 grader 默认值一致)
 
 # RawTherapee CLI 路径（空字符串自动从 PATH 查找 rawtherapee-cli）

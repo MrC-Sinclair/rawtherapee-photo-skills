@@ -380,134 +380,217 @@ def rt_map_tone_curve(pp3, tc_params):
     pp3[("Exposure", "CurveMode")] = "Standard"
 
 
-_RT_HSL_MAP = {
-    "red": "Red",
-    "orange": "Orange",
-    "yellow": "Yellow",
-    "green": "Green",
-    "aqua": "Cyan",
-    "blue": "Blue",
-    "purple": "BluePurple",
-    "magenta": "Purple",
+# LR's 8 HSL channels → positions on the 0-360° hue wheel (degrees).
+# RT's HSV Equalizer is a continuous curve over hue, so each LR channel
+# becomes a single control point at its characteristic hue.
+_HSL_CHANNEL_HUE = {
+    "red": 0,
+    "orange": 30,
+    "yellow": 60,
+    "green": 120,
+    "aqua": 180,
+    "blue": 240,
+    "purple": 270,
+    "magenta": 300,
 }
+
+# RT FlatCurve encoding used by [HSV Equalizer] HCurve/SCurve/VCurve:
+#   "1;x1;y1;lt1;rt1;x2;y2;lt2;rt2;..."
+#   type 1 = FCT_MinMaxCPoints; x / y / tangents are 0..1 floats; the string
+#   ends with a trailing ';'. Identity is the line y = 0.5 — a curve whose
+#   points are all y = 0.5 is classified FCT_Empty by RT (i.e. no-op), which
+#   is why identity curves must never be written.
+_FLATCURVE_TYPE = "1"
+_FLATCURVE_IDENTITY = 0.5
+_FLATCURVE_TANGENT = 0.35  # same tangent RT uses for its own generated curves
+
+
+def _hsl_slider_to_y(kind, value):
+    """LR per-channel slider (-100..100) → FlatCurve y (identity = 0.5).
+
+    Semantics mirror RT's improcfun.cc HSV Equalizer formulas:
+      hue : h = (y - 0.5) * 2 + h   (h is a 0..1 hue fraction, 1.0 = 360°)
+      sat : y > 0.5 → blend toward full saturation;
+            y < 0.5 → s *= 1 + 2 * (y - 0.5)
+      lum : same shape as saturation, but additionally damped by saturation,
+            so near-grey pixels are unaffected — an inherent RT/LR difference.
+    """
+    v = max(-100.0, min(100.0, float(value)))
+    if kind == "hue":
+        # ±100 LR ⇒ ±30° hue rotation
+        return _FLATCURVE_IDENTITY + (v / 100.0 * 30.0) / 720.0
+    if v > 0:
+        return _FLATCURVE_IDENTITY + 0.15 * v / 100.0
+    # Negative side is an exact multiplicative cut: v = -100 ⇒ y = 0 ⇒ s *= 0
+    return _FLATCURVE_IDENTITY + 0.5 * v / 100.0
+
+
+def _hsl_flatcurve(kind, adj_by_channel):
+    """Build one FlatCurve string from {channel: LR slider value}.
+
+    Returns None when every channel is (near-)identity, so callers can skip
+    writing a curve that RT would treat as empty anyway.
+    """
+    points = []
+    for channel, hue_deg in _HSL_CHANNEL_HUE.items():
+        raw = adj_by_channel.get(channel, 0.0)
+        y = _hsl_slider_to_y(kind, raw) if abs(raw) >= 0.5 else _FLATCURVE_IDENTITY
+        points.append([hue_deg / 360.0, y])
+
+    # Float-safe identity test: never compare to 0.5 with '!='.
+    if all(abs(y - _FLATCURVE_IDENTITY) <= 1e-6 for _, y in points):
+        return None
+
+    # Close the curve: x = 1.0 repeats the red point (red sits at 0°/360°).
+    points.append([1.0, points[0][1]])
+
+    parts = [_FLATCURVE_TYPE]
+    for x, y in points:
+        parts.append(f"{x:.6f}")
+        parts.append(f"{y:.6f}")
+        parts.append(f"{_FLATCURVE_TANGENT}")
+        parts.append(f"{_FLATCURVE_TANGENT}")
+    return ";".join(parts) + ";"
 
 
 def rt_map_hsl(pp3, hsl_list):
-    """Map LR 8-channel HSL adjustments → RT HSV Equalizer curves.
+    """Map LR 8-channel HSL adjustments → RT HSV Equalizer FlatCurves.
 
-    RawTherapee's HSV Equalizer uses HCurve/SatCurve/ValCurve (CubicSpline),
-    not per-channel keys. We convert LR's 8-channel adjustments into these
-    curves by mapping each channel's hue/saturation/luminance offset to
-    control points on the respective curve.
-
-    The 8 LR channels map to approximate positions on the 0-360 hue wheel:
-      Red=0, Orange=30, Yellow=60, Green=120, Cyan=180, Blue=240, Purple=270, Magenta=300
+    The real RT keys are HCurve / SCurve / VCurve — HueCurve/SatCurve/ValCurve
+    do not exist and are silently ignored by the engine (diff = 0.00).
     """
     if not hsl_list:
         return
-    has_any = any(any(abs(item.get(k, 0)) >= 0.5 for k in ("hue", "saturation", "luminance")) for item in hsl_list)
-    if not has_any:
+
+    collected = {"hue": {}, "saturation": {}, "luminance": {}}
+    for item in hsl_list:
+        if not isinstance(item, dict):
+            continue
+        channel = str(item.get("channel", "")).lower()
+        if channel not in _HSL_CHANNEL_HUE:
+            continue
+        for kind in collected:
+            try:
+                value = float(item.get(kind, 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if abs(value) >= 0.5:
+                collected[kind][channel] = value
+
+    curves = {
+        "HCurve": _hsl_flatcurve("hue", collected["hue"]),
+        "SCurve": _hsl_flatcurve("saturation", collected["saturation"]),
+        "VCurve": _hsl_flatcurve("luminance", collected["luminance"]),
+    }
+    if not any(curves.values()):
         return
 
-    # Map LR channel names to hue positions (degrees)
-    CHANNEL_HUE_POS = {
-        "red": 0,
-        "orange": 30,
-        "yellow": 60,
-        "green": 120,
-        "aqua": 180,
-        "blue": 240,
-        "purple": 270,
-        "magenta": 300,
-    }
+    pp3[("HSV Equalizer", "Enabled")] = True
+    for key, curve in curves.items():
+        if curve:
+            pp3[("HSV Equalizer", key)] = curve
 
-    # Collect per-channel adjustments
-    h_adj = {}  # hue_pos → hue_offset
-    s_adj = {}  # hue_pos → sat_offset
-    l_adj = {}  # hue_pos → lum_offset
 
-    for item in hsl_list:
-        ch = item.get("channel", "").lower()
-        if ch not in CHANNEL_HUE_POS:
+# LR 3-way color grading zone → RT [ColorToning] Splitco channel sliders.
+# (Splitco == "Color Balance Shadows/Midtones/Highlights"; the engine's
+#  mixerToCurve() turns each RGB triple into hue + strength.)
+_CG_ZONE_KEYS = {
+    "shadow": ("Redlow", "Greenlow", "Bluelow"),
+    "midtone": ("Redmed", "Greenmed", "Bluemed"),
+    "highlight": ("Redhigh", "Greenhigh", "Bluehigh"),
+}
+
+
+def _cg_float(value):
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _hue_to_rgb_sliders(hue_deg, saturation):
+    """(hue°, LR saturation 0..100) → RT Splitco RGB slider triple.
+
+    mixerToCurve() normalises the triple to derive the hue and takes
+    sat = (max - min) / 2 as the toning strength. Feeding it the pure hue
+    chroma scaled by `saturation` therefore yields strength = saturation / 2
+    (LR 100 → 0.5), with the hue preserved exactly.
+    """
+    h = (float(hue_deg) % 360.0) / 60.0
+    index = int(h) % 6
+    f = h - int(h)
+    table = [
+        (1.0, f, 0.0),
+        (1.0 - f, 1.0, 0.0),
+        (0.0, 1.0, f),
+        (0.0, 1.0 - f, 1.0),
+        (f, 0.0, 1.0),
+        (1.0, 0.0, 1.0 - f),
+    ]
+    r, g, b = table[index]
+    return tuple(int(round(c * saturation)) for c in (r, g, b))
+
+
+def _warn_cg_ignored(cg_params):
+    """Report LR color-grading fields that Splitco cannot express.
+
+    RT's Splitco method has no Balance field (only Splitlr uses it) and no
+    per-zone luminance controls, so those LR params are dropped — loudly,
+    never silently.
+    """
+    dropped = []
+    for key, value in sorted(cg_params.items()):
+        if key.startswith("_"):
             continue
-        hue_pos = CHANNEL_HUE_POS[ch]
-        h_val = item.get("hue", 0)
-        s_val = item.get("saturation", 0)
-        l_val = item.get("luminance", 0)
-        if abs(h_val) >= 0.5:
-            h_adj[hue_pos] = h_val * 0.8
-        if abs(s_val) >= 0.5:
-            s_adj[hue_pos] = s_val * 0.8
-        if abs(l_val) >= 0.5:
-            l_adj[hue_pos] = l_val * 0.8
-
-    # Build CubicSpline curves from adjustments
-    # Base control points: evenly spaced across hue wheel (0-999 mapped from 0-360)
-    # We use 9 points: 0, 45, 90, 135, 180, 225, 270, 315, 360 → 0, 125, 250, 375, 500, 625, 750, 875, 999
-    BASE_POINTS = [0, 125, 250, 375, 500, 625, 750, 875, 999]
-    BASE_HUE = [0, 45, 90, 135, 180, 225, 270, 315, 360]
-
-    def build_curve(adj_map):
-        """Build a CubicSpline curve from hue-position adjustments."""
-        if not adj_map:
-            return None
-        points = list(BASE_POINTS)  # flat baseline = identity
-        for i, hue in enumerate(BASE_HUE):
-            # Find the nearest adjustment
-            best_adj = 0
-            best_dist = float("inf")
-            for adj_hue, adj_val in adj_map.items():
-                dist = min(abs(hue - adj_hue), 360 - abs(hue - adj_hue))
-                if dist < best_dist and dist <= 30:
-                    best_dist = dist
-                    best_adj = adj_val * (1 - dist / 60)  # falloff
-            points[i] = rt_clamp(points[i] + round(best_adj * 3), 0, 999)
-        # RT 5.10: simple format, no CubicSpline prefix
-        return ";".join(str(v) for v in points)
-
-    h_curve = build_curve(h_adj)
-    s_curve = build_curve(s_adj)
-    l_curve = build_curve(l_adj)
-
-    if h_curve:
-        pp3[("HSV Equalizer", "Enabled")] = True
-        pp3[("HSV Equalizer", "HueCurve")] = h_curve
-    if s_curve:
-        pp3[("HSV Equalizer", "Enabled")] = True
-        pp3[("HSV Equalizer", "SatCurve")] = s_curve
-    if l_curve:
-        pp3[("HSV Equalizer", "Enabled")] = True
-        pp3[("HSV Equalizer", "ValCurve")] = l_curve
+        lowered = key.lower()
+        if not any(token in lowered for token in ("balance", "luminance", "blending")):
+            continue
+        if abs(_cg_float(value)) < 1e-6:
+            continue
+        dropped.append(f"{key}={value}")
+    if dropped:
+        print(
+            "⚠️  color_grading: RT Splitco has no equivalent for "
+            + ", ".join(dropped)
+            + " — ignored (Balance / per-zone luminance only exist for "
+            "Splitlr, which cannot express shadows+midtones+highlights at once).",
+            file=sys.stderr,
+        )
 
 
 def rt_map_color_grading(pp3, cg_params):
-    """Map LR 3-way color grading → RT Color Toning."""
+    """Map LR 3-way color grading → RT [ColorToning] with Method=Splitco.
+
+    The real RT section name is [ColorToning] (no space) — "[Color Toning]"
+    is silently ignored by the engine (diff = 0.00).
+    """
     if not cg_params:
         return
-    sh_hue = cg_params.get("shadow_hue", 0)
-    sh_sat = cg_params.get("shadow_saturation", 0)
-    mh_hue = cg_params.get("midtone_hue", 0)
-    mh_sat = cg_params.get("midtone_saturation", 0)
-    hh_hue = cg_params.get("highlight_hue", 0)
-    hh_sat = cg_params.get("highlight_saturation", 0)
 
-    has_sh = abs(sh_hue) >= 0.5 or abs(sh_sat) >= 0.5
-    has_hh = abs(hh_hue) >= 0.5 or abs(hh_sat) >= 0.5
-    has_mh = abs(mh_hue) >= 0.5 or abs(mh_sat) >= 0.5
-    if not (has_sh or has_hh or has_mh):
+    zones = {
+        "shadow": (_cg_float(cg_params.get("shadow_hue")), _cg_float(cg_params.get("shadow_saturation"))),
+        "midtone": (_cg_float(cg_params.get("midtone_hue")), _cg_float(cg_params.get("midtone_saturation"))),
+        "highlight": (_cg_float(cg_params.get("highlight_hue")), _cg_float(cg_params.get("highlight_saturation"))),
+    }
+    active = {zone: values for zone, values in zones.items() if abs(values[1]) >= 0.5}
+    if not active:
         return
 
-    pp3[("Color Toning", "Enabled")] = True
-    pp3[("Color Toning", "Method")] = "Splitlr"
-    if has_sh:
-        pp3[("Color Toning", "Shadows_Hue")] = rt_clamp(int(sh_hue), 0, 360)
-        pp3[("Color Toning", "Shadows_Saturation")] = round(rt_clamp(sh_sat, 0, 100) * 0.8)
-    if has_hh:
-        pp3[("Color Toning", "Highlights_Hue")] = rt_clamp(int(hh_hue), 0, 360)
-        pp3[("Color Toning", "Highlights_Saturation")] = round(rt_clamp(hh_sat, 0, 100) * 0.8)
-    if has_mh:
-        pp3[("Color Toning", "AutoCorrection")] = round(rt_clamp(mh_sat, 0, 100) * 0.6)
-        pp3[("Color Toning", "Split")] = round(rt_clamp(abs(mh_sat) * 0.35, 0, 70))
+    pp3[("ColorToning", "Enabled")] = True
+    pp3[("ColorToning", "Method")] = "Splitco"
+    # Strength drives strProtect = pow(strength/100, 0.4) in toningsmh()
+    # (rtengine/improcfun.cc, RT 5.13). RT's default is 50 ⇒ 0.758, i.e. the
+    # tint lands ~24% weaker than the saturation/200 model assumes; writing 100
+    # makes the documented mapping exact.
+    pp3[("ColorToning", "Strength")] = 100
+    for zone, (hue, saturation) in active.items():
+        r, g, b = _hue_to_rgb_sliders(hue, saturation)
+        red_key, green_key, blue_key = _CG_ZONE_KEYS[zone]
+        pp3[("ColorToning", red_key)] = r
+        pp3[("ColorToning", green_key)] = g
+        pp3[("ColorToning", blue_key)] = b
+
+    _warn_cg_ignored(cg_params)
 
 
 def rt_map_sharpening(pp3, detail):
@@ -699,7 +782,7 @@ def build_pp3(params, style="graded", config=None):
         "Vibrance",
         "Color Management",
         "HSV Equalizer",
-        "Color Toning",
+        "ColorToning",
         "Sharpening",
         "Directional Pyramid Denoising",
         "Vignetting Correction",
@@ -1167,7 +1250,7 @@ Engine: RawTherapee CLI (rawtherapee-cli) — professional-grade output
 Examples:
   %(prog)s grading_params.json
   %(prog)s grading_params.json --raw-dir ~/Photos/RAW --output ~/Photos/Graded
-  %(prog)s grading_params.json --quality 98 --no-resize
+  %(prog)s grading_params.json --quality 98
   %(prog)s grading_params.json --dry-run
   %(prog)s grading_params.json --pp3-only --pp3-output ./pp3_files/
 

@@ -8,6 +8,52 @@ This skill bundles two upstream ClawHub skills, `photo-toolkit` and `photo-grade
 ClawHub / Marvis treat one folder as one skill. The per-module history lives in
 `photo-toolkit/CHANGELOG.md` and `photo-grader/CHANGELOG.md`.
 
+## [1.0.4] - 2026-09-17
+
+The `hsl` / `color_grading` mapping actually works now — it had been silently ignored by the engine.
+
+### Fixed
+
+- **`photo-grader/scripts/grade.py`: HSL and three-way color grading were no-ops.** The emitted pp3
+  used `[Color Toning]`, `HueCurve/SatCurve/ValCurve` and `Shadows_Hue`/`Highlights_Hue`, none of
+  which exist in RawTherapee 5.13; RT drops unknown sections and keys without any warning, so an
+  A/B CLI render of the same image differed by exactly 0.00. Corrected to the real names verified
+  against `rtengine/procparams.cc` (5.13) and re-measured by pixel diff.
+  - `rt_map_hsl()` → `[HSV Equalizer]` `HCurve` / `SCurve` / `VCurve`, values as FlatCurve strings
+    (`type;x;y;lt;rt;…`, type 1) with the eight LR hue positions as control points, a closing point
+    at x=1.0 and split tangents at 0.35. Identity curves no longer emit the section, and the
+    "changed" test uses `abs(y-0.5) > 1e-6` instead of a float `!= 0.5` comparison.
+  - `rt_map_color_grading()` → `[ColorToning]` with `Enabled=1`, `Method=Splitco` and the per-zone
+    `Redlow/Greenlow/Bluelow` … `Redhigh/Greenhigh/Bluehigh` sliders converted from hue+saturation
+    (`hsv_to_rgb(hue,1,1) × sat`). `Strength=100` is written because RT scales tint by
+    `pow(Strength/100, 0.4)` and the default 50 would cap it at 0.758. `Balance` is not written for
+    Splitco, and the LR per-zone luminance that Splitco cannot express is reported on **stderr**
+    rather than dropped silently.
+  - `SECTION_ORDER`: `"Color Toning"` → `"ColorToning"`.
+
+### Added
+
+- `photo-grader/templates/rt-mapping-reference.md`: real section/key names for HSV Equalizer and
+  ColorToning, FlatCurve encoding rules, worked hue+saturation→slider examples, and a new
+  **engine fidelity differences** table (vCurve saturation damping, half-range luminance, linear
+  working-space hue amplification, sparse-anchor bandwidth, Strength scaling, unequal zone weights,
+  additive per-channel tinting).
+- `SKILL.md`: HSL/Color Grading mapping targets and the same fidelity notes, plus the reminder that
+  any pp3 field edit must be re-verified with an A/B CLI render.
+
+### Verified
+
+- A/B pixel-diff regression (RawTherapee CLI 5.13, synthetic 3000×2000 grey ramp + 6-hue × 3-luminance
+  band chart, `np.abs(case - baseline).mean()`, determinism floor 0.00):
+  - `ct_shadow` / `ct_midtone` / `ct_highlight` / `ct_all` — gradient 7.83 / 10.10 / 8.98 / 11.85,
+    bands 19.63 / 18.46 / 30.37 / 37.98 (were 0.00).
+  - `hsl_hue_sat_lum` / `hsl_desat_red` / `hsl_hue_only` — bands 7.30 / 14.76 / 3.41 (were 0.00);
+    gradient diff is 0.00 by design, since neutral grey has no hue and the vCurve is saturation-damped.
+  - Zone deltas match intent (shadow hue 220 → ΔR −14.5/ΔB +13.9; midtone hue 40 → ΔR +14.2/ΔB −23.3;
+    highlight hue 300 → ΔR +22.6/ΔB +15.6).
+  - `Strength`: 100 vs 50 vs key-absent → diff ×1.22~1.32, with 50 and absent byte-identical
+    (confirming RT's default is 50).
+
 ## [1.0.3] - 2026-09-16
 
 Third module merged in, plus the dangling Curator-prompt reference is fixed.

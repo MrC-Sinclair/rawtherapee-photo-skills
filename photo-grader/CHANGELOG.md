@@ -4,6 +4,47 @@ All notable changes to this skill will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This skill carries its own version per [strategy C in RELEASING.md](../RELEASING.md).
 
+## [1.0.4] - 2026-09-17
+
+### Fixed
+
+- **`scripts/grade.py`: `hsl` and `color_grading` never reached the engine.** The pp3 carried
+  `[Color Toning]`, `HueCurve`/`SatCurve`/`ValCurve` and `Shadows_Hue`/`Highlights_Hue` — none of
+  which exist in RawTherapee 5.13. RT silently ignores unknown sections and keys, so the image came
+  out identical to the baseline (pixel diff 0.00) with no error anywhere.
+  - `rt_map_hsl()`: rewritten to emit `[HSV Equalizer]` `HCurve` / `SCurve` / `VCurve` as FlatCurve
+    strings (`type;x;y;lt;rt;…`, type 1 = FCT_MinMaxCPoints), with control points at the eight LR hue
+    positions (red 0 / orange 30 / yellow 60 / green 120 / aqua 180 / blue 240 / purple 270 /
+    magenta 300), a closing point at x=1.0 reusing the red value, split tangent 0.35. Slider→y:
+    hue `0.5 + (v/100*30)/720`; saturation and luminance `0.5 + 0.15*v/100` for v>0 and
+    `0.5 + 0.5*v/100` for v<0 (v=−100 ⇒ fully desaturated). Values below |0.5| stay at identity, the
+    change test is `abs(y-0.5) > 1e-6`, and an all-identity set no longer emits the section.
+  - `rt_map_color_grading()`: rewritten to emit `[ColorToning]` (no space), `Enabled=1`,
+    `Method=Splitco`, per-zone `Redlow/Greenlow/Bluelow`, `Redmed/Greenmed/Bluemed`,
+    `Redhigh/Greenhigh/Bluehigh` built as `hsv_to_rgb(hue/360, 1, 1) × saturation`, plus
+    `Strength=100` (RT scales tinting by `pow(Strength/100, 0.4)`; the default 50 caps it at 0.758).
+    A zone is only written when |sat| ≥ 0.5; `Balance` is Splitlr-only and is not written, and the
+    per-zone luminance with no Splitco counterpart is announced on stderr instead of being dropped.
+  - `SECTION_ORDER`: `"Color Toning"` → `"ColorToning"`.
+
+### Added
+
+- `templates/rt-mapping-reference.md`: corrected rows for `hsl` and `color_grading`, a new
+  "curve encoding" table (FlatCurve format, `ColorToning` slider semantics) and a new
+  "engine fidelity differences" table (vCurve saturation damping and missing ×2 factor,
+  linear working-space hue amplification, sparse-anchor bandwidth, Strength scaling, unequal
+  zone weights, additive per-channel tinting).
+
+### Verified
+
+- A/B CLI render regression (RT 5.13, synthetic grey ramp and 6-hue × 3-luminance band chart,
+  `np.abs(case - baseline).mean()`, determinism floor 0.00; was 0.00 before the fix):
+  `ct_shadow` 7.83 / 19.63, `ct_midtone` 10.10 / 18.46, `ct_highlight` 8.98 / 30.37,
+  `ct_all` 11.85 / 37.98 (gradient / bands); `hsl_hue_sat_lum` 7.30, `hsl_desat_red` 14.76,
+  `hsl_hue_only` 3.41 on the band chart. Zone-averaged deltas point the intended way
+  (shadow hue 220 → blue gain / red loss; midtone hue 40 → red gain / blue loss;
+  highlight hue 300 → red and blue gain).
+
 ## [1.0.3] - 2026-09-16
 
 ### Added
