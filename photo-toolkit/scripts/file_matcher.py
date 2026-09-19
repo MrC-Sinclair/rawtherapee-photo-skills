@@ -8,6 +8,47 @@ regardless of file extension differences.
 
 from pathlib import Path
 
+import os
+import shutil
+
+
+def safe_link(src, dst):
+    """Create ``dst`` as a link to (or copy of) ``src``. Returns True only when
+    ``dst`` really exposes the source bytes afterwards.
+
+    ``os.symlink()`` can "succeed" on Windows while leaving a 0-byte regular
+    file behind (no SeCreateSymbolicLinkPrivilege and no developer mode), which
+    silently corrupts every downstream consumer — convert.py then reports a
+    successful "linked" thumbnail, and assemble.py hands ffmpeg an empty frame.
+    Every strategy is therefore verified before it is trusted, and the caller
+    should fall back to a real re-encode/copy when this returns False.
+    """
+    src = Path(src)
+    dst = Path(dst)
+    strategies = (
+        lambda: os.symlink(str(src.resolve()), str(dst)),
+        lambda: os.link(str(src), str(dst)),
+        lambda: shutil.copy2(str(src), str(dst)),
+    )
+    for make in strategies:
+        try:
+            if dst.is_symlink() or dst.exists():
+                dst.unlink()
+            make()
+        except (OSError, NotImplementedError, AttributeError):
+            try:
+                if dst.is_symlink() or dst.exists():
+                    dst.unlink()
+            except OSError:
+                pass
+            continue
+        try:
+            if dst.exists() and dst.stat().st_size > 0:
+                return True
+        except OSError:
+            pass
+    return False
+
 # Supported extensions (must match grade.py and layout_preview.py)
 RAW_EXTENSIONS = {
     ".nef",

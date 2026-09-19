@@ -24,6 +24,11 @@ import sys
 import tempfile
 from pathlib import Path
 
+# Scripts live in the same directory; make the shared helper importable even
+# when assemble.py is invoked through an absolute path from elsewhere.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from file_matcher import safe_link  # noqa: E402
+
 
 # ── Configuration ───────────────────────────────────────────────
 
@@ -149,23 +154,24 @@ Examples:
         print(f"   Last frame:  {frames[-1].name}")
         sys.exit(0)
 
-    # ── Create sequential symlinks for FFmpeg ────────────────────
+    # ── Create sequential links for FFmpeg ──────────────────────
     # FFmpeg needs sequentially numbered files (frame_000001.jpg, frame_000002.jpg, ...)
-    # Create temp dir with symlinks to ensure correct ordering
+    # Create temp dir with links to ensure correct ordering. safe_link verifies
+    # the destination actually exposes the source bytes — a Windows os.symlink
+    # can "succeed" yet leave a 0-byte regular file, which would make ffmpeg
+    # fail with "Error opening input". When no link strategy works it falls
+    # back to a real copy2 so the frame is always valid.
     tmp_dir = tempfile.mkdtemp(prefix="assemble_frames_")
     try:
         for i, frame in enumerate(frames):
             link_name = f"frame_{i:06d}.jpg"
             link_path = os.path.join(tmp_dir, link_name)
-            try:
-                os.symlink(str(frame), link_path)
-            except OSError:
-                # Windows without developer mode / admin rights cannot create
-                # symlinks: fall back to a hard link, then to a real copy.
-                try:
-                    os.link(str(frame), link_path)
-                except OSError:
-                    shutil.copy2(str(frame), link_path)
+            if not safe_link(str(frame), link_path):
+                # Paranoid final fallback: copy explicitly.
+                shutil.copy2(str(frame), link_path)
+            if not (os.path.exists(link_path) and os.path.getsize(link_path) > 0):
+                print(f"❌ Failed to stage frame {link_path} from {frame}", file=sys.stderr)
+                sys.exit(1)
 
         input_pattern = os.path.join(tmp_dir, "frame_%06d.jpg")
         output_path.parent.mkdir(parents=True, exist_ok=True)

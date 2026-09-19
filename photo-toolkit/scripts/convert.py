@@ -50,6 +50,11 @@ import time
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
+# Scripts live in the same directory; make the shared helpers importable even
+# when convert.py is invoked through an absolute path from elsewhere.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from file_matcher import safe_link  # noqa: E402
+
 
 # ── Supported extensions ───────────────────────────────────────
 RAW_EXTENSIONS = {
@@ -251,22 +256,23 @@ def process_file(raw_path, output_dir, size, quality, overwrite=False, preserve_
         if is_non_raw and not in_place and per_image_budget_bytes > 0:
             file_size = raw_path.stat().st_size
             if file_size <= per_image_budget_bytes:
-                # Original is small enough — symlink instead of re-encoding
-                try:
-                    os.symlink(str(raw_path.resolve()), str(jpg_path))
-                except OSError:
-                    # Fallback: copy if symlink fails (e.g. cross-device)
-                    import shutil
-
-                    shutil.copy2(str(raw_path), str(jpg_path))
-                elapsed = time.monotonic() - start
-                file_size_kb = file_size / 1024
-                return (
-                    raw_name,
-                    True,
-                    f"⚡ {jpg_name} (linked, {file_size_kb:.0f}KB ≤ budget {per_image_budget_bytes/1024:.0f}KB)",
-                    elapsed,
-                )
+                # Original is small enough — link/copy instead of re-encoding.
+                # safe_link verifies the destination actually exposes the source
+                # bytes (a Windows os.symlink can "succeed" yet leave a 0-byte
+                # regular file behind). When it cannot produce a valid link we
+                # fall through to a real re-encode rather than reporting a false
+                # "linked" success that corrupts every downstream consumer.
+                if safe_link(str(raw_path.resolve()), str(jpg_path)):
+                    elapsed = time.monotonic() - start
+                    file_size_kb = file_size / 1024
+                    return (
+                        raw_name,
+                        True,
+                        f"⚡ {jpg_name} (linked, {file_size_kb:.0f}KB ≤ budget {per_image_budget_bytes/1024:.0f}KB)",
+                        elapsed,
+                    )
+                # safe_link returned False → do NOT report a bogus "linked"
+                # success; continue to the real decode/re-encode path below.
 
         # ── Determine processing path ────────────────────────────
         if ext_lower in RAW_EXTENSIONS:

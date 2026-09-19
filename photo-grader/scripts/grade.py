@@ -49,6 +49,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -305,25 +306,38 @@ def rt_map_contrast(pp3, basic):
 
 
 def rt_map_tone_compression(pp3, basic):
-    """Map LR highlights/shadows/whites/blacks → RT HighlightCompr/ShadowCompr."""
+    """Map LR highlights/shadows → RT [Shadows & Highlights].
+
+    RT's Exposure.HighlightCompr / ShadowCompr (and HLRecovery) are no-ops on
+    already-8-bit JPG/HEIC sources, so LR highlights/shadows are routed to the
+    dedicated [Shadows & Highlights] module, which works on every input type.
+
+    Sign convention matches between LR and RT:
+        highlights +100 → recover/lighten clipped highlights → RT Highlights = +100
+        highlights -100 → darken highlights                 → RT Highlights = -100
+        shadows   +100 → lift shadows                       → RT Shadows   = +100
+        shadows   -100 → darken shadows                     → RT Shadows   = -100
+    """
     hl = basic.get("highlights", 0)
     sh = basic.get("shadows", 0)
+    enabled = False
 
     if abs(hl) >= 0.5:
-        if hl > 0:
-            pp3[("Exposure", "HighlightCompr")] = round(rt_clamp(hl, 0, 100))
-        else:
-            pp3[("HLRecovery", "Enabled")] = True
-            pp3[("HLRecovery", "Method")] = "Coloropp"
-            pp3[("HLRecovery", "Hlbl")] = round(rt_clamp(-hl, 0, 100))
+        enabled = True
+        # RT's [Shadows & Highlights] Highlights slider only COMPRESSES (darkens)
+        # highlights for positive values; the negative direction is a no-op. LR
+        # highlights -100 (tame/darken) therefore maps to a positive RT value,
+        # while LR +100 (brighten) has no RT equivalent and is intentionally
+        # dropped — inverting it into a positive darkening would contradict the
+        # user's intent.
+        pp3[("Shadows & Highlights", "Highlights")] = round(rt_clamp(-hl, 0, 100))
 
     if abs(sh) >= 0.5:
-        if sh > 0:
-            pp3[("Exposure", "ShadowCompr")] = round(rt_clamp(sh, 0, 100))
-        else:
-            # RT Shadow recovery via Shadows & Highlights
-            pp3[("Shadows & Highlights", "Enabled")] = True
-            pp3[("Shadows & Highlights", "Shadows")] = round(rt_clamp(-sh, 0, 100))
+        enabled = True
+        pp3[("Shadows & Highlights", "Shadows")] = round(rt_clamp(sh, -100, 100))
+
+    if enabled:
+        pp3[("Shadows & Highlights", "Enabled")] = True
 
     # Whites/Blacks have no dedicated RT keys; rt_map_tone_curve folds them into
     # the [Exposure] Curve endpoints (build_pp3 passes `basic` through).
@@ -701,13 +715,19 @@ def rt_map_noise_reduction(pp3, detail):
 
 
 def rt_map_vignette(pp3, effects):
-    """Map LR vignette → RT Vignetting Correction."""
+    """Map LR vignette → RT Vignetting Correction.
+
+    RT's Vignetting Correction Amount is signed: positive darkens the corners
+    (adds a vignette), negative lightens them. LR's vignette_amount uses the
+    same convention, so the sign must be preserved — taking abs() made a
+    negative (lighten) amount incorrectly darken the corners too.
+    """
     if not effects:
         return
     vig = effects.get("vignette_amount", 0)
     if abs(vig) < 0.5:
         return
-    pp3[("Vignetting Correction", "Amount")] = round(abs(vig) * 1.5)
+    pp3[("Vignetting Correction", "Amount")] = round(vig * 1.5)
     pp3[("Vignetting Correction", "Radius")] = 50
     pp3[("Vignetting Correction", "Strength")] = 1
     pp3[("Vignetting Correction", "CenterX")] = 0
@@ -1134,11 +1154,15 @@ def grade_single_file(
 
         # Per-task scratch directory. RawTherapee always names its render after
         # the input stem, and the temp PP3/TIFF files are stem-based too, so two
-        # styles of the same source file running concurrently (16 workers by
-        # default) would otherwise overwrite each other's PP3/TIFF and race on
-        # the same render path — one job dies with "Error saving to ...".
-        task_tmp = output_dir / "__rt_tmp__" / f"{raw_path.stem}_{safe_style}_{os.getpid()}_{int(time.monotonic() * 1e6)}"
-        task_tmp.mkdir(parents=True, exist_ok=True)
+        # styles of the same source file running concurrently would otherwise
+        # overwrite each other's PP3/TIFF and race on the same render path.
+        # tempfile.mkdtemp() guarantees a process- AND thread-unique path even
+        # under the ThreadPoolExecutor this script uses (where os.getpid() is
+        # identical across workers and time.monotonic() can collide), so one
+        # thread's rmtree() can never delete another task's PP3/TIFF mid-render.
+        rt_tmp_root = output_dir / "__rt_tmp__"
+        rt_tmp_root.mkdir(parents=True, exist_ok=True)
+        task_tmp = Path(tempfile.mkdtemp(prefix=f"{raw_path.stem}_{safe_style}_", dir=str(rt_tmp_root)))
         tmp_pp3 = task_tmp / f"{raw_path.stem}.pp3"
         with open(tmp_pp3, "w", encoding="utf-8") as f:
             f.write(pp3_content)
@@ -1187,10 +1211,6 @@ def grade_single_file(
                 if alt_img.exists() and alt_img.resolve() != raw_path.resolve():
                     shutil.move(str(alt_img), str(jpg_path))
         shutil.rmtree(task_tmp, ignore_errors=True)
-        try:
-            task_tmp.parent.rmdir()  # drop __rt_tmp__ once the last job is done
-        except OSError:
-            pass
         output_jpg = jpg_path
 
         elapsed = time.monotonic() - start
@@ -1693,6 +1713,18 @@ Examples:
                     success_count += 0 if "Skipped" in message else 1
                 else:
                     error_count += 1
+
+    # Clean up the (now-empty) per-task scratch root that grade_single_file
+    # creates under <output>/__rt_tmp__/. Each task already rmtree()s its own
+    # mkdtemp subdir, so only the empty parent is left behind; remove it so the
+    # output directory stays tidy.
+    if output_dir is not None:
+        try:
+            rt_tmp_root = output_dir / "__rt_tmp__"
+            if rt_tmp_root.is_dir() and not any(rt_tmp_root.iterdir()):
+                rt_tmp_root.rmdir()
+        except OSError:
+            pass
 
     total_elapsed = time.monotonic() - total_start
     print(f"\n{'─' * 55}")
