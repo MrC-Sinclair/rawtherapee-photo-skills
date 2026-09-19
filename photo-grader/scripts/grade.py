@@ -1093,7 +1093,7 @@ def grade_single_file(
         style = params.get("style", "graded")
         safe_style = "".join(c if c.isalnum() or c in "_-" else "_" for c in style)[:20]
 
-        # Smart output routing: RAW/HEIC -> 16-bit TIFF, JPG -> JPG 100%
+        # Smart output routing: RAW/HEIC -> 16-bit TIFF (无损存档); JPG -> JPG (按 quality 重编码，默认 95)
         import copy
         effective_config = copy.deepcopy(config)
         if is_hires_input(raw_path):
@@ -1101,7 +1101,7 @@ def grade_single_file(
             output_ext = ".tif"
         else:
             effective_config["output_bpp"] = 8
-            effective_config["output_quality"] = 100
+            effective_config["output_quality"] = quality
             output_ext = ".jpg"
 
         pp3_content, safe_style = build_pp3(
@@ -1506,7 +1506,7 @@ Examples:
     )
     parser.add_argument("--output", type=str, default=None, help="Output directory for graded JPGs")
     parser.add_argument("--config", type=str, default=None, help="Path to config.toml")
-    parser.add_argument("--quality", type=int, default=None, help="JPEG quality 1-100 (default: 100, maximum quality)")
+    parser.add_argument("--quality", type=int, default=None, help="JPEG quality 1-100 (default: 95)")
     parser.add_argument("--overwrite", action="store_true", default=None, help="Overwrite existing output files")
     parser.add_argument("--dry-run", action="store_true", help="Preview without processing")
     # RT-specific options
@@ -1548,7 +1548,7 @@ Examples:
 
     raw_dir_raw = args.raw_dir or cfg.get("raw_dir") or cfg.get("nef_dir")
     output_raw = args.output or cfg.get("output_dir")
-    quality = args.quality if args.quality is not None else cfg.get("jpeg_quality", 100)
+    quality = args.quality if args.quality is not None else cfg.get("jpeg_quality", 95)
     workers = args.workers if args.workers is not None else cfg.get("workers") or get_cpu_count()
     overwrite = args.overwrite if args.overwrite is not None else cfg.get("overwrite", False)
     fast_export = args.fast_export or cfg.get("fast_export", False)
