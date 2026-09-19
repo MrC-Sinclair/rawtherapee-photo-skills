@@ -871,6 +871,26 @@ def _find_thumbnail(session_path: Path, stem: str) -> Path | None:
     return None
 
 
+# Content-Type by suffix. Graded output is TIFF whenever the source was RAW
+# (.tif/.tiff are explicitly accepted by build_session_manifest), so a
+# hard-coded image/jpeg would make the response describe bytes that are not
+# JPEG at all.
+CONTENT_TYPE_BY_SUFFIX = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
+
+
+def _content_type_for(path: Path, fallback: str) -> str:
+    """Return the Content-Type matching ``path``'s suffix, else ``fallback``."""
+    return CONTENT_TYPE_BY_SUFFIX.get(path.suffix.lower(), fallback)
+
+
 def make_handler(app: dict):
     """Return a ``BaseHTTPRequestHandler`` subclass closed over ``app``.
 
@@ -918,7 +938,7 @@ def make_handler(app: dict):
                 self._json(500, {"error": str(e)})
                 return
             self.send_response(200)
-            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Type", _content_type_for(path, content_type))
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "public, max-age=3600")
             self.end_headers()

@@ -110,8 +110,10 @@ RAW / JPG / HEIC
 
 > **Note**: RAW files provide full 16-bit editing latitude for maximum quality. JPG is 8-bit, and so
 > is 8-bit HEIC; 10/12-bit HEIC keeps its per-channel depth through the transcode (see below).
-> Every export is 8-bit JPG, so grading range stays narrower than RAW — keep exposure adjustments
-> conservative either way.
+> Export follows the input: RAW and HEIC sources are written as **16-bit TIFF**
+> (`is_hires_input()` → `output_bpp 16`, `--quality` does not apply), while JPG sources are re-encoded
+> as 8-bit JPG at `--quality`. Grading range therefore stays full for RAW/HEIC and narrows only for
+> JPG input — keep exposure adjustments conservative on JPG.
 
 ## Dependencies & Setup
 
@@ -519,8 +521,12 @@ The server **always binds `127.0.0.1`** and never exposes itself to the public i
 - Thumbnails (`convert.py`, ≤2048px / quality 80-85) are lower-resolution than the full-resolution RT
   renders, so the "original" side looks softer. Use RawTherapee's own viewer for pixel-level checks.
 - Mobile single-click has a ~250ms delay to disambiguate click vs. double-click (desktop unaffected).
-- Avoid underscores in style names: `rpartition('_')` can mis-split a style name containing an
-  underscore when the file stem does not, and the cell is then reported as `graded missing`.
+- `preview.py` resolves each cell by the explicit `_<style>` suffix, so style names containing
+  underscores (`warm_spring`) map correctly. `layout_preview.py` still strips one `_`-delimited
+  suffix heuristically when ordering, so it can mis-order such names.
+- RAW/HEIC sessions export 16-bit TIFF, which browsers cannot render: on those sessions the grid's
+  graded side shows as broken images. Keep `graded/` in JPG (or fall back to
+  `layout_preview.py`, which composites server-side) when the interactive preview is the goal.
 
 ## Agent Integration
 

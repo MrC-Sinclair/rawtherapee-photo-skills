@@ -8,6 +8,46 @@ This skill bundles two upstream ClawHub skills, `photo-toolkit` and `photo-grade
 ClawHub / Marvis treat one folder as one skill. The per-module history lives in
 `photo-toolkit/CHANGELOG.md` and `photo-grader/CHANGELOG.md`.
 
+## [Unreleased]
+
+Review pass over the execution chain: three script-level defects and three documentation
+mismatches. No CLI contract, `grading_params.json` field, or dependency change; the whole chain
+stays parameter-only grading plus deterministic geometry — there is no generative/image-synthesis
+step anywhere (no diffusion/img2img/inpainting, no model downloads, no remote inference; the only
+external process is the RawTherapee CLI, the only network call is ffmpeg-free local assembly).
+
+### Fixed
+
+- **`photo-toolkit/scripts/convert.py`: copied EXIF never survived the re-encode.** The handwritten
+  APP1 scan handed the *whole* segment (`\xff\xe1` + 2-byte length + payload) to
+  `Image.save(exif=...)`, but Pillow expects the payload alone — it prepends its own `Exif\0\0`
+  header, so the emitted segment was malformed and every tag was silently dropped
+  (`getexif()` came back empty, verified by round-trip). `_extract_exif_payload()` now walks the
+  JPEG header for the first *Exif* APP1 segment (skipping XMP ones) and returns the payload only.
+- **`photo-toolkit/scripts/layout_preview.py`: the BEFORE side was a grey placeholder on every RAW
+  session.** `grading_params.json` points at RAW originals, which Pillow cannot decode, so the
+  comparison fell into a silent `except` branch every time. Originals are now ranked by
+  decodability (`_pick_original`), `convert.py`'s `thumbnails/` directories act as a last-resort
+  source (`_thumbnail_index`), and an undecodable original is reported on stdout instead of being
+  papered over with a grey rectangle.
+- **`photo-toolkit/scripts/layout_preview.py`: key derivation destroyed ordinary filenames.** The
+  "strip the subdirectory prefix" step ran unconditionally, so `DSC_0001_warm.jpg` yielded `0001`
+  and missed both the `grading_params.json` mapping and the thumbnail fallback. A leading segment
+  is now stripped only when it is purely numeric (`001_DSC_0001` → `DSC_0001`), and all candidates
+  are tried in order (`graded_stem_keys`).
+- **`photo-previewer/scripts/preview.py`: every response was labelled `image/jpeg`.** RAW/HEIC
+  sessions export `.tif`, so graded cells were served with a Content-Type that did not describe
+  their bytes. `_content_type_for()` derives it from the file suffix (jpeg / png / tiff / webp /
+  gif) with the previous value kept as the fallback.
+
+### Changed
+
+- **`SKILL.md`: output depth and previewer limits now match the code.** The note claiming "every
+  export is 8-bit JPG" contradicted `is_hires_input()` (RAW/HEIC → 16-bit TIFF, `--quality`
+  inapplicable); the "avoid underscores in style names" trade-off predated `preview.py`'s
+  suffix-based `_claim()` matching; and the fact that browsers cannot render the TIFF graded side
+  (so RAW sessions need `layout_preview.py`, or a JPG `graded/`) is now stated.
+
 ## [1.0.7] - 2026-09-18
 
 Marvis could not import the skill at all: the frontmatter files started with a UTF-8 BOM.

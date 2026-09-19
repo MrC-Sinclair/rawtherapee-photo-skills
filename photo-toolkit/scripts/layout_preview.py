@@ -63,6 +63,83 @@ def resize_to_fit(img, max_w, max_h):
     return img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
 
+# Extensions Pillow decodes directly. Camera RAW is deliberately absent:
+# grading_params.json normally points at the RAW original, and a RAW file
+# cannot be opened by Pillow, so it must lose to a convert.py thumbnail
+# instead of silently rendering as a grey placeholder.
+DIRECTLY_DECODABLE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp", ".bmp", ".gif"}
+
+
+def _pick_original(candidates):
+    """Return the best usable original out of ``candidates`` (first = highest priority).
+
+    Pass 1 keeps the highest-priority file Pillow can actually decode; pass 2
+    falls back to the highest-priority existing file, so a lone RAW path keeps
+    the previous behaviour instead of returning None.
+    """
+    existing = []
+    for c in candidates:
+        if not c:
+            continue
+        p = Path(c)
+        if p.exists():
+            existing.append(p)
+    for p in existing:
+        if p.suffix.lower() in DIRECTLY_DECODABLE_EXTENSIONS:
+            return p
+    return existing[0] if existing else None
+
+
+def _thumbnail_index(graded_paths, params_mapping=None):
+    """Map ``stem.lower() -> path`` for every ``thumbnails/`` dir in the session.
+
+    Two locations are scanned: the session's own ``thumbnails/`` sibling of
+    ``graded/``, and the ``thumbnails/`` directory next to the RAW originals
+    (``convert.py``'s default ``{input}/thumbnails/`` output).
+    """
+    dirs = []
+    if graded_paths:
+        dirs.append(graded_paths[0].parent.parent / "thumbnails")
+    for ref in (params_mapping or {}).values():
+        dirs.append(Path(ref).parent / "thumbnails")
+
+    index = {}
+    for d in dict.fromkeys(dirs):
+        if not d.is_dir():
+            continue
+        for p in sorted(d.iterdir()):
+            if p.is_file() and p.suffix.lower() in (".jpg", ".jpeg"):
+                index.setdefault(p.stem.lower(), p)
+    return index
+
+
+def graded_stem_keys(graded_path):
+    """Candidate original-stem keys to try for a graded filename, lowercase.
+
+    ``DSC_0001_暖春丝滑`` → ``("dsc_0001_暖春丝滑", "dsc_0001")``;
+    ``001_DSC_0001_暖春丝滑`` additionally yields ``"dsc_0001"`` with the numeric
+    subdirectory prefix stripped (``grade.py::_compute_output_name`` prefixes the
+    outputs of files that live in a subdirectory of the RAW root).
+    """
+    stem_lower = graded_path.stem.lower()
+    keys = [stem_lower]
+    parts = graded_path.stem.rsplit("_", 1)
+    if len(parts) == 1:
+        return tuple(keys)
+
+    base_stem = parts[0].lower()
+    if base_stem not in keys:
+        keys.append(base_stem)
+
+    # Strip a leading *numeric* prefix only ("001_DSC_0001" → "dsc_0001").
+    # Stripping the first segment unconditionally would turn an ordinary
+    # "DSC_0001" into "0001" and lose the original.
+    first_seg, _, rest = base_stem.partition("_")
+    if rest and first_seg.isdigit() and rest not in keys:
+        keys.append(rest)
+    return tuple(keys)
+
+
 def _find_originals_from_params(params_json):
     """从 grading_params.json 获取 originals 绝对路径映射。"""
     if not params_json:
@@ -222,35 +299,36 @@ def generate_comparison(
     Generate side-by-side comparison images (original left, graded right).
     Multiple photos are stacked vertically, with a header bar and prominent labels.
     """
+    thumbs = _thumbnail_index(graded_paths, params_mapping)
+
     pairs = []
     for gp in graded_paths:
-        orig = None
+        stem_keys = graded_stem_keys(gp)
+        candidates = []
+
         # Priority 1: from params_mapping (absolute paths in grading_params.json)
         if params_mapping:
-            # Try full stem match first
-            stem_lower = gp.stem.lower()
-            # Strip style suffix: "DSC_0001_暖春丝滑" → "DSC_0001"
-            parts = gp.stem.rsplit("_", 1)
-            if len(parts) > 1:
-                base_stem = parts[0].lower()
-                # Also strip subdirectory prefix: "001_DSC_0001" → "DSC_0001"
-                sub_parts = base_stem.rsplit("_", 1)
-                if len(sub_parts) > 1:
-                    base_stem = sub_parts[1].lower()
-            else:
-                base_stem = stem_lower
-
-            for key in [base_stem, stem_lower]:
+            for key in stem_keys:
                 if key in params_mapping:
-                    ref_path = Path(params_mapping[key])
-                    if ref_path.exists():
-                        orig = ref_path
-                        break
+                    candidates.append(params_mapping[key])
+                    break
 
         # Priority 2: from originals_dir
-        if orig is None and originals_dir:
-            orig = find_original_for_graded(gp, originals_dir, params_json)
-        pairs.append((orig, gp))
+        if originals_dir:
+            match = find_original_for_graded(gp, originals_dir, params_json)
+            if match:
+                candidates.append(match)
+
+        # Priority 3: convert.py thumbnails. params normally points at the RAW
+        # original, which Pillow cannot decode — without this fallback the
+        # BEFORE side silently degenerates into a grey placeholder.
+        if thumbs:
+            for key in stem_keys:
+                if key in thumbs:
+                    candidates.append(thumbs[key])
+                    break
+
+        pairs.append((_pick_original(candidates), gp))
 
     if not pairs:
         return None
@@ -276,13 +354,18 @@ def generate_comparison(
         target_h = cell_height
         graded_resized = graded_img.resize((target_w, target_h), Image.Resampling.LANCZOS)
 
+        orig_resized = None
         if orig_path and orig_path.exists():
             try:
                 orig_img = Image.open(orig_path).convert("RGB")
                 orig_resized = orig_img.resize((target_w, target_h), Image.Resampling.LANCZOS)
-            except Exception:
-                orig_resized = Image.new("RGB", (target_w, target_h), (200, 200, 200))
-        else:
+            except Exception as e:
+                # Pillow cannot decode camera RAW — report it instead of
+                # silently substituting the grey placeholder.
+                print(f"   ⚠️  Original not decodable: {orig_path.name} ({e})")
+                print("      Run convert.py to build thumbnails, or pass --originals <thumbnails_dir>.")
+        if orig_resized is None:
+            print(f"   ⚠️  No usable original for {graded_path.name} — BEFORE side left blank.")
             orig_resized = Image.new("RGB", (target_w, target_h), (200, 200, 200))
 
         # Add corner labels on images

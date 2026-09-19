@@ -6,6 +6,22 @@ This skill carries its own version per [strategy C in RELEASING.md](../RELEASING
 
 ## [Unreleased]
 
+### Fixed
+
+- **`convert.py`: copied EXIF never survived the re-encode.** The APP1 scan passed the whole
+  segment (`\xff\xe1` + 2-byte length + payload) to `Image.save(exif=...)`, while Pillow expects
+  the payload alone and adds its own `Exif\0\0` header — so the tag block was malformed and every
+  tag was dropped (`getexif()` round-tripped empty). `_extract_exif_payload()` now returns the
+  first *Exif* APP1 payload, skipping XMP segments.
+- **`layout_preview.py`: the BEFORE side was a grey placeholder whenever `grading_params.json`
+  pointed at RAW originals** (Pillow cannot decode RAW, and the failure was swallowed). Candidates
+  are now ranked by decodability (`_pick_original`), `convert.py`'s `thumbnails/` serve as a
+  fallback source (`_thumbnail_index`), and an unusable original is reported on stdout.
+- **`layout_preview.py`: `graded_stem_keys()` destroyed ordinary filenames.** The subdirectory
+  prefix was stripped unconditionally, so `DSC_0001_warm.jpg` resolved to key `0001` and matched
+  neither the params mapping nor the thumbnails. Only a purely numeric leading segment is stripped
+  now (`001_DSC_0001` → `DSC_0001`).
+
 ## [1.0.1] - 2026-06-02
 
 ### Added

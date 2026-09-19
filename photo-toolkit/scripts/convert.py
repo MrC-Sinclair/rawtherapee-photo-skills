@@ -173,6 +173,48 @@ def get_cpu_count():
         return 4
 
 
+# JPEG APP1 marker and the two payload signatures that denote real EXIF.
+# An APP1 segment may also carry XMP, which must not be handed to Pillow.
+APP1_MARKER = b"\xff\xe1"
+EXIF_PAYLOAD_PREFIXES = (b"Exif\x00\x00", b"Exif\x00\x01")
+# APP1 segments are length-prefixed with 16 bits, so one segment is < 64 KiB;
+# a 128 KiB header window always covers a leading EXIF block in practice.
+HEADER_SCAN_BYTES = 131072
+
+
+def _extract_exif_payload(photo_path):
+    """
+    Extract the EXIF *payload* (``Exif\\x00\\x00`` + TIFF header) from a JPEG.
+
+    ``Image.save(exif=...)`` expects the APP1 payload, not the whole marker
+    segment: passing ``\\xff\\xe1`` + length + payload makes Pillow prepend its
+    own ``Exif\\x00\\x00`` and emit a malformed segment, which silently drops
+    every EXIF tag from the re-encoded thumbnail.
+
+    Returns the payload bytes, or None when no EXIF APP1 segment is present
+    (RAW and HEIC sources, for instance, carry their metadata differently).
+    """
+    try:
+        with open(str(photo_path), "rb") as f:
+            header = f.read(HEADER_SCAN_BYTES)
+    except OSError:
+        return None
+
+    pos = 0
+    while True:
+        start = header.find(APP1_MARKER, pos)
+        if start == -1 or start + 4 > len(header):
+            return None
+        seg_length = int.from_bytes(header[start + 2 : start + 4], "big")
+        if seg_length < 2:
+            return None
+        payload = header[start + 4 : start + 2 + seg_length]
+        if payload[:6] in EXIF_PAYLOAD_PREFIXES:
+            return payload
+        # Not EXIF (e.g. XMP) — keep scanning for the next APP1 segment.
+        pos = start + 2
+
+
 def process_file(raw_path, output_dir, size, quality, overwrite=False, preserve_exif=True, per_image_budget_bytes=0):
     """
     Process a single photo file (RAW/JPG/HEIC) to JPG thumbnail.
@@ -264,17 +306,7 @@ def process_file(raw_path, output_dir, size, quality, overwrite=False, preserve_
         image.thumbnail((size, size), Image.Resampling.LANCZOS)
 
         # ── EXIF Handling ───────────────────────────────────────
-        exif_bytes = None
-        if preserve_exif:
-            try:
-                with open(str(raw_path), "rb") as f:
-                    header = f.read(65536)
-                exif_start = header.find(b"\xff\xe1")
-                if exif_start != -1:
-                    exif_length = int.from_bytes(header[exif_start + 2 : exif_start + 4], "big")
-                    exif_bytes = header[exif_start : exif_start + 2 + exif_length]
-            except Exception:
-                exif_bytes = None
+        exif_bytes = _extract_exif_payload(raw_path) if preserve_exif else None
 
         # ── Save JPEG ──────────────────────────────────────────
         save_kwargs = {
