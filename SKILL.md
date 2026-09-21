@@ -142,6 +142,12 @@ powershell -ExecutionPolicy Bypass -File setup_deps.ps1
 > re-run the setup above. Never copy a `.venv` between machines; it is machine-bound by design and
 > `config.toml` is likewise machine-local.
 
+> **Do not declare RawTherapee/ffmpeg missing based on PATH or Program Files alone.**
+> grade.py and assemble.py self-detect custom install locations (including `D:\workspace\...`-style
+> custom roots) on Windows. The correct first check is to just run the script; it prints the detected
+> engine path itself. Only report a dependency as missing when the script actually exits with the
+> "not found" message.
+
 **RawTherapee CLI discovery** (`grade.py`): `config.toml: rawtherapee_cli` → env var
 `RAWTHERAPEE_CLI` → `PATH` → GUI binary's folder → common install dirs. If none hit, the error
 message prints a PowerShell one-liner an agent can run to locate an existing install on this
