@@ -11,6 +11,13 @@ metadata:
         - python3
 ---
 
+> **AGENTS — READ FIRST:** Do *not* write your own dependency audit (no `where.exe` /
+> `Test-Path` / ad-hoc Python probes just to list what's missing). The scripts self-detect.
+> On Windows run `powershell -ExecutionPolicy Bypass -File setup_deps.ps1`; on macOS/Linux run
+> `bash photo-grader/scripts/setup_deps.sh`. They print the actually-detected paths (including
+> custom installs like `D:\workspace\...`). `grade.py` also prints `Engine: <path>` itself on
+> startup. Only report a dependency missing when the script exits with a "not found" message.
+
 AI photography post-processing toolkit (photo-toolkit + photo-grader + photo-previewer
 merged into one skill):
 batch convert RAW/JPG/HEIC to JPG thumbnails, find photos by shooting date, detect timelapse
