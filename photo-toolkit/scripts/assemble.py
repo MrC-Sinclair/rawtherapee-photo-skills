@@ -138,7 +138,7 @@ Examples:
     # ── Find frames ──────────────────────────────────────────────
     frames = find_jpg_frames(input_dir)
     if not frames:
-        print("❌ No JPG frames found in input directory.")
+        print("❌ No JPG frames found in input directory.", file=sys.stderr)
         sys.exit(1)
 
     duration = len(frames) / fps

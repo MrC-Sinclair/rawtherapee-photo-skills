@@ -106,12 +106,63 @@ def _read_uint32(data, offset, big_endian):
     return struct.unpack_from(fmt, data, offset)[0]
 
 
+def _exif_date_from_tiff_bytes(exif_data):
+    """Shared TIFF/EXIF parser: exif_data starts at the TIFF header (MM/II)."""
+    byte_order = exif_data[0:2]
+    big_endian = byte_order == b"MM"
+    if byte_order not in (b"MM", b"II"):
+        return None
+    magic = _read_uint16(exif_data, 2, big_endian)
+    if magic != 42:
+        return None
+    ifd_offset = _read_uint32(exif_data, 4, big_endian)
+    exif_ifd_offset = _find_tag_in_ifd(exif_data, 0, ifd_offset, 0x8769, big_endian)
+    if exif_ifd_offset is not None:
+        date_str = _find_string_tag_in_ifd(exif_data, 0, exif_ifd_offset, 0x9003, big_endian)
+        if date_str:
+            return _parse_exif_datetime(date_str)
+        date_str = _find_string_tag_in_ifd(exif_data, 0, exif_ifd_offset, 0x9004, big_endian)
+        if date_str:
+            return _parse_exif_datetime(date_str)
+    date_str = _find_string_tag_in_ifd(exif_data, 0, ifd_offset, 0x0132, big_endian)
+    if date_str:
+        return _parse_exif_datetime(date_str)
+    return None
+
+
+def _read_exif_date_heic(raw_path):
+    """Read DateTimeOriginal from HEIC/HEIF via pillow-heif (EXIF lives inside
+    ISO BMFF boxes, invisible to a raw header scan)."""
+    try:
+        from pillow_heif import open_heif
+    except ImportError:
+        return None
+    try:
+        heif = open_heif(raw_path)
+        data = heif.info.get("exif")
+    except Exception:
+        return None
+    if not data:
+        return None
+    if data[:6] == b"Exif\x00\x00":
+        data = data[6:]
+    try:
+        return _exif_date_from_tiff_bytes(data)
+    except Exception:
+        return None
+
+
 def read_exif_date(raw_path):
     """
     Read DateTimeOriginal from a camera RAW file's EXIF data.
-    Works with NEF, CR2, ARW, DNG, and other TIFF-based RAW formats.
+    Works with NEF, CR2, ARW, DNG, HEIC/HEIF, and other TIFF-based RAW formats.
     """
     try:
+        # HEIC/HEIF: EXIF is stored inside ISO BMFF (ftyp) boxes — extract it
+        # with pillow-heif instead of scanning the raw header.
+        if Path(raw_path).suffix.lower() in HEIC_EXTENSIONS:
+            return _read_exif_date_heic(raw_path)
+
         with open(raw_path, "rb") as f:
             header = f.read(256 * 1024)
 
@@ -152,34 +203,7 @@ def read_exif_date(raw_path):
         if exif_data is None:
             return None
 
-        # Parse TIFF header
-        byte_order = exif_data[exif_offset : exif_offset + 2]
-        big_endian = byte_order == b"MM"
-        if byte_order not in (b"MM", b"II"):
-            return None
-
-        magic = _read_uint16(exif_data, exif_offset + 2, big_endian)
-        if magic != 42:
-            return None
-
-        ifd_offset = _read_uint32(exif_data, exif_offset + 4, big_endian)
-
-        # Walk IFD0 to find ExifIFD pointer (tag 0x8769)
-        exif_ifd_offset = _find_tag_in_ifd(exif_data, exif_offset, ifd_offset, 0x8769, big_endian)
-
-        if exif_ifd_offset is not None:
-            date_str = _find_string_tag_in_ifd(exif_data, exif_offset, exif_ifd_offset, 0x9003, big_endian)
-            if date_str:
-                return _parse_exif_datetime(date_str)
-            date_str = _find_string_tag_in_ifd(exif_data, exif_offset, exif_ifd_offset, 0x9004, big_endian)
-            if date_str:
-                return _parse_exif_datetime(date_str)
-
-        date_str = _find_string_tag_in_ifd(exif_data, exif_offset, ifd_offset, 0x0132, big_endian)
-        if date_str:
-            return _parse_exif_datetime(date_str)
-
-        return None
+        return _exif_date_from_tiff_bytes(exif_data[exif_offset:])
 
     except Exception:
         return None

@@ -120,9 +120,11 @@ def find_raw_file(file_ref, raw_root=None, supported_extensions=None):
         result = find_file_by_stem(raw_root, file_ref_path.stem, supported_extensions)
         if result:
             return result
-        # Try recursive search in subdirectories
-        for p in sorted(raw_root.rglob(f"{file_ref_path.stem}*")):
-            if p.is_file() and p.suffix.lower() in supported_extensions:
+        # Try recursive search in subdirectories (case-insensitive: glob patterns
+        # are case-sensitive on Linux/macOS, so compare names in Python instead).
+        stem_lc = file_ref_path.stem.lower()
+        for p in sorted(raw_root.rglob("*")):
+            if p.is_file() and p.stem.lower().startswith(stem_lc) and p.suffix.lower() in supported_extensions:
                 return p
 
     return None
@@ -154,15 +156,16 @@ def find_file_by_stem(directory, stem, supported_extensions=None):
             if candidate.exists():
                 return candidate
 
-    # Try glob pattern matching
-    matches = []
-    for ext in supported_extensions:
-        matches.extend(directory.glob(f"{stem}*{ext}"))
-        matches.extend(directory.glob(f"{stem.upper()}*{ext}"))
-
-    file_matches = [m for m in matches if m.suffix.lower() in supported_extensions]
+    # Case-insensitive partial-stem match. Glob patterns are case-sensitive on
+    # Linux/macOS (e.g. "*.nef" won't match ".NEF"), so walk and compare in Python.
+    stem_lc = stem.lower()
+    file_matches = [
+        p for p in directory.iterdir()
+        if p.is_file() and p.stem.lower().startswith(stem_lc)
+        and p.suffix.lower() in supported_extensions
+    ]
     if file_matches:
-        return file_matches[0]
+        return sorted(file_matches)[0]
 
     return None
 

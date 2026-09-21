@@ -18,6 +18,25 @@ external process is the RawTherapee CLI, the only network call is ffmpeg-free lo
 
 ### Fixed
 
+- **`photo-grader/scripts/grade.py`: RAW/HEIC "16-bit TIFF" export actually produced 8-bit JPEG
+  content with a `.tif` extension.** RawTherapee CLI ignores the PP3 `[Output]` section, so the
+  fixed `-j95` flag forced 8-bit JPEG regardless of `output_bpp=16`. The CLI now passes `-t`
+  (16-bit integer TIFF) whenever `output_bpp == 16`; the 8-bit JPG path is unchanged. Verified on
+  RT 5.13: DNG/HEIC outputs are real 16-bit TIFF (`II*\0`, `uint16`).
+- **`photo-toolkit/scripts/find_by_date.py`: HEIC/HEIF shooting dates were never parsed.** EXIF
+  lives inside ISO BMFF (`ftyp`) boxes, so the raw-header scan (TIFF `II/MM` / JPEG APP1) always
+  missed it and every HEIC fell into `no_date`, contradicting the documented "searches HEIC by
+  EXIF date". HEIC inputs are now routed through `pillow_heif.open_heif(...).info["exif"]`, the
+  `Exif\0\0` prefix stripped, and the bytes run through the shared TIFF parser.
+- **`photo-toolkit/scripts/convert.py`: `--from-stdin` blew up on empty/garbage stdin.**
+  `json.load(sys.stdin)` had no error handling, so an empty pipe or non-JSON input dumped a
+  `JSONDecodeError` traceback. Empty/invalid JSON and a non-object payload now print a clean
+  message to stderr and exit 1.
+- **User-facing errors went to stdout in four scripts.** `deflicker.py` / `assemble.py` /
+  `layout_preview.py` / `grade.py` printed ❌ errors and ⚠️ warnings on stdout, polluting
+  pipelines that consume stdout (e.g. `find_by_date.py --json | convert.py --from-stdin`) and
+  defeating `2>/dev/null`. All error/warning prints now go to `sys.stderr`; informational output
+  stays on stdout.
 - **`photo-toolkit/scripts/convert.py`: copied EXIF never survived the re-encode.** The handwritten
   APP1 scan handed the *whole* segment (`\xff\xe1` + 2-byte length + payload) to
   `Image.save(exif=...)`, but Pillow expects the payload alone — it prepends its own `Exif\0\0`
@@ -39,6 +58,30 @@ external process is the RawTherapee CLI, the only network call is ffmpeg-free lo
   sessions export `.tif`, so graded cells were served with a Content-Type that did not describe
   their bytes. `_content_type_for()` derives it from the file suffix (jpeg / png / tiff / webp /
   gif) with the previous value kept as the fallback.
+
+### Fixed
+
+- **`file_matcher.py`: stem matching was case-sensitive on Linux/macOS.** Glob patterns like
+  `*.nef` never matched `.NEF`, and `rglob("<stem>*")` compared stems case-sensitively, so a
+  reference written as `DSC_0001` could miss `dsc_0001.NEF` on a case-sensitive filesystem. Matching
+  now walks the directory and compares `stem.lower()` / `suffix.lower()` in Python.
+- **`grade.py --uniform-dir` could not recurse.** It always scanned the top level only. A
+  `--recursive` / `-r` flag is now accepted (subdirectories are scanned; `thumbnails/graded/sessions`
+  are still skipped).
+- **`grade.py --pp3-only` and `--dry-run` required RawTherapee to be installed.** They never invoke
+  the engine (PP3-only writes sidecar files; dry-run only lists files), so a missing engine is now a
+  warning and the run continues. Normal grading still hard-fails when the CLI is missing or unusable.
+
+### Added
+
+- **`RAWTHERAPEE_CLI` environment variable** (grade.py): an explicit machine-local override for the
+  CLI path, checked after `config.toml` and before `PATH`. It survives a `config.toml` copied from
+  another machine, so a stale path in the file no longer needs to be hand-edited on every new box.
+  When the CLI still isn't found, the error message now lists the three discovery options and a
+  PowerShell one-liner an agent can run to locate an existing install.
+- **`setup_deps.ps1`** (Windows): one command that creates or *repairs* the project `.venv`
+  (a venv copied from another machine is detected as dead and rebuilt) and installs all three
+  modules' requirements; SKILL.md's setup section is now Windows-aware with a venv self-check.
 
 ### Changed
 

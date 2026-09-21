@@ -118,21 +118,32 @@ RAW / JPG / HEIC
 ## Dependencies & Setup
 
 **Prefer venv**: Before running scripts, activate the project-root virtual environment (e.g. `.venv/`).
-If it doesn't exist, create one first:
+If it doesn't exist (or exists but is broken — a `.venv` copied from another machine points at that
+machine's base Python and is dead on arrival), create it fresh:
 
 ```bash
-# Create venv and install dependencies (recommended)
+# macOS / Linux
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r photo-toolkit/requirements.txt -r photo-grader/requirements.txt
-
-# Or run each module's setup script
 bash photo-toolkit/scripts/setup_deps.sh
 bash photo-grader/scripts/setup_deps.sh
-
-# Before each session, activate venv
-source .venv/bin/activate
 ```
+
+```powershell
+# Windows — one command: creates or REPAIRS the venv and installs all deps
+powershell -ExecutionPolicy Bypass -File setup_deps.ps1
+```
+
+> **Venv self-check on a copied folder**: run `.venv\Scripts\python.exe -c "import rawpy, pillow_heif"`.
+> If it fails (non-existent interpreter, or missing deps), the venv is stale — delete `.venv` and
+> re-run the setup above. Never copy a `.venv` between machines; it is machine-bound by design and
+> `config.toml` is likewise machine-local.
+
+**RawTherapee CLI discovery** (`grade.py`): `config.toml: rawtherapee_cli` → env var
+`RAWTHERAPEE_CLI` → `PATH` → GUI binary's folder → common install dirs. If none hit, the error
+message prints a PowerShell one-liner an agent can run to locate an existing install on this
+machine; then point the discovered path at `rawtherapee_cli` (config) or `RAWTHERAPEE_CLI` (env).
 
 ### System requirements
 

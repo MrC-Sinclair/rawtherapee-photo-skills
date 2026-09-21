@@ -344,7 +344,7 @@ def generate_comparison(
         try:
             graded_img = Image.open(graded_path).convert("RGB")
         except Exception as e:
-            print(f"   ⚠️  Failed to load graded {graded_path.name}: {e}")
+            print(f"   ⚠️  Failed to load graded {graded_path.name}: {e}", file=sys.stderr)
             continue
 
         # Scale graded to cell_height
@@ -362,10 +362,10 @@ def generate_comparison(
             except Exception as e:
                 # Pillow cannot decode camera RAW — report it instead of
                 # silently substituting the grey placeholder.
-                print(f"   ⚠️  Original not decodable: {orig_path.name} ({e})")
-                print("      Run convert.py to build thumbnails, or pass --originals <thumbnails_dir>.")
+                print(f"   ⚠️  Original not decodable: {orig_path.name} ({e})", file=sys.stderr)
+                print("      Run convert.py to build thumbnails, or pass --originals <thumbnails_dir>.", file=sys.stderr)
         if orig_resized is None:
-            print(f"   ⚠️  No usable original for {graded_path.name} — BEFORE side left blank.")
+            print(f"   ⚠️  No usable original for {graded_path.name} — BEFORE side left blank.", file=sys.stderr)
             orig_resized = Image.new("RGB", (target_w, target_h), (200, 200, 200))
 
         # Add corner labels on images
@@ -537,7 +537,7 @@ Examples:
                     layout_order = lc["order"]
                     layout_count = lc.get("count")
             except (json.JSONDecodeError, OSError) as e:
-                print(f"   ⚠️  Failed to load layout config: {e}")
+                print(f"   ⚠️  Failed to load layout config: {e}", file=sys.stderr)
 
     image_paths = find_graded_images(graded_dir, args.params)
 
@@ -579,7 +579,7 @@ Examples:
                 img = Image.open(p).convert("RGB")
                 images.append(img)
             except Exception as e:
-                print(f"   ⚠️  Failed to load {p.name}: {e}")
+                print(f"   ⚠️  Failed to load {p.name}: {e}", file=sys.stderr)
 
         if not images:
             print("❌ No images could be loaded.", file=sys.stderr)

@@ -165,6 +165,13 @@ def find_rawtherapee_cli(cli_path=None):
         _RT_CLI = str(Path(cli_path).resolve())
         return _RT_CLI
 
+    # Machine-local environment variable (survives config.toml being copied
+    # from another machine; takes precedence over PATH/scan below).
+    env_cli = os.environ.get("RAWTHERAPEE_CLI")
+    if env_cli and Path(env_cli).exists():
+        _RT_CLI = str(Path(env_cli).resolve())
+        return _RT_CLI
+
     # Search PATH
     rt = shutil.which("rawtherapee-cli")
     if rt:
@@ -195,9 +202,13 @@ def find_rawtherapee_cli(cli_path=None):
 def _rt_cli_install_hint():
     if sys.platform == "win32":
         return (
-            "Install RawTherapee from https://rawtherapee.com/downloads, then either add its "
-            "folder to PATH or set rawtherapee_cli in config.toml to the full path of "
-            "rawtherapee-cli.exe"
+            "Install RawTherapee from https://rawtherapee.com/downloads. Then make the CLI "
+            "discoverable in any one of these ways: (a) add its folder to PATH; "
+            "(b) set env var RAWTHERAPEE_CLI to the full path of rawtherapee-cli.exe; "
+            "(c) set rawtherapee_cli in config.toml. To locate an existing install an agent can run: "
+            "Get-ChildItem -Path \"$env:LOCALAPPDATA\\Programs\",\"C:\\Program Files\","
+            "\"C:\\Program Files (x86)\" -Filter rawtherapee-cli.exe -Recurse -ErrorAction "
+            "SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName"
         )
     if sys.platform == "darwin":
         # Always verify the CLI on macOS. If an agent installed RawTherapee via
@@ -251,22 +262,32 @@ def _validate_rt_cli_executable(rt):
     )
 
 
-def check_rt_cli(config=None):
-    """Check that rawtherapee-cli is available and can start successfully."""
+def check_rt_cli(config=None, required=True):
+    """Check that rawtherapee-cli is available and can start successfully.
+
+    When ``required`` is False (dry-run / pp3-only), a missing or unusable
+    engine only prints a warning and returns None instead of exiting.
+    """
     cfg = config or {}
     rt = find_rawtherapee_cli(cfg.get("rawtherapee_cli", ""))
     if not rt:
-        print("❌ RawTherapee CLI not found.", file=sys.stderr)
-        print(f"   {_rt_cli_install_hint()}", file=sys.stderr)
-        sys.exit(1)
+        if required:
+            print("❌ RawTherapee CLI not found.", file=sys.stderr)
+            print(f"   {_rt_cli_install_hint()}", file=sys.stderr)
+            sys.exit(1)
+        print("⚠️  RawTherapee CLI not found — continuing without engine (dry-run / PP3-only).", file=sys.stderr)
+        return None
 
     ok, message = _validate_rt_cli_executable(rt)
     if not ok:
-        print(f"❌ RawTherapee CLI is not usable: {rt}", file=sys.stderr)
-        print(f"   Reason: {message}", file=sys.stderr)
-        print(f"   Verify manually with: {rt} -h", file=sys.stderr)
-        print(f"   {_rt_cli_install_hint()}", file=sys.stderr)
-        sys.exit(1)
+        if required:
+            print(f"❌ RawTherapee CLI is not usable: {rt}", file=sys.stderr)
+            print(f"   Reason: {message}", file=sys.stderr)
+            print(f"   Verify manually with: {rt} -h", file=sys.stderr)
+            print(f"   {_rt_cli_install_hint()}", file=sys.stderr)
+            sys.exit(1)
+        print(f"⚠️  RawTherapee CLI unusable: {rt} ({message}) — continuing.", file=sys.stderr)
+        return None
 
     print(f"✓ Engine: RawTherapee ({rt}) — {message}")
     return rt
@@ -1168,11 +1189,19 @@ def grade_single_file(
             f.write(pp3_content)
 
         # Build rawtherapee-cli command (RT 5.10: -c must be last)
+        #
+        # Output format is decided by CLI flags ONLY: RT CLI ignores the PP3's
+        # [Output] section, so a PP3 declaring Format=TIFF/BitDepth=16 still
+        # renders 8-bit JPEG when -j is passed. For the 16-bit archival path
+        # (RAW/HEIC → 16-bit TIFF) pass -t so the extra depth is really kept.
         cli = [_RT_CLI]
         if fast_export:
             cli += ["-f"]
         cli += ["-o", str(task_tmp)]
-        cli += [f"-j{quality}"]  # RT 5.10: -j95 not -j 95
+        if effective_config.get("output_bpp", 8) == 16:
+            cli += ["-t"]  # 16-bit integer TIFF (verified on RT 5.13)
+        else:
+            cli += [f"-j{quality}"]  # RT 5.10: -j95 not -j 95
         cli += ["-p", str(tmp_pp3)]
         if overwrite:
             cli += ["-Y"]
@@ -1524,6 +1553,10 @@ Examples:
     parser.add_argument(
         "--uniform-dir", type=str, default=None, help="Apply first parameter set to ALL files in this directory"
     )
+    parser.add_argument(
+        "--recursive", "-r", action="store_true",
+        help="With --uniform-dir: also scan subdirectories for supported files",
+    )
     parser.add_argument("--output", type=str, default=None, help="Output directory for graded JPGs")
     parser.add_argument("--config", type=str, default=None, help="Path to config.toml")
     parser.add_argument("--quality", type=int, default=None, help="JPEG quality 1-100 (default: 95)")
@@ -1557,8 +1590,10 @@ Examples:
 
     cfg = load_config(args.config)
 
-    # Check RT CLI
-    check_rt_cli(cfg)
+    # Check RT CLI only when the engine will actually run. --dry-run lists files;
+    # --pp3_only writes sidecar files; neither invokes rawtherapee-cli, so a missing
+    # engine there is a warning, not a failure.
+    check_rt_cli(cfg, required=not (args.pp3_only or args.dry_run))
 
     # Merge CLI flags into config
     if args.lens_corr is not None:
@@ -1600,9 +1635,9 @@ Examples:
             sys.exit(1)
         base_params = all_params[0]
         base_params.pop("file", None)
-        all_files = find_supported_files(uniform_path)
+        all_files = find_supported_files(uniform_path, recursive=args.recursive)
         if not all_files:
-            print(f"❌ No supported photo files found in: {uniform_path}")
+            print(f"❌ No supported photo files found in: {uniform_path}", file=sys.stderr)
             sys.exit(1)
 
         ext_counts = {}
@@ -1618,16 +1653,16 @@ Examples:
         for p in all_params:
             filename = p.get("file", "")
             if not filename:
-                print(f"  ⚠️  Skipping entry with no 'file' field: {p.get('style', '?')}")
+                print(f"  ⚠️  Skipping entry with no 'file' field: {p.get('style', '?')}", file=sys.stderr)
                 continue
             raw_path = find_raw_file(filename, raw_dir)
             if raw_path is None:
-                print(f"  ⚠️  RAW file not found: {filename}")
+                print(f"  ⚠️  RAW file not found: {filename}", file=sys.stderr)
                 continue
             tasks.append((raw_path, p))
 
     if not tasks:
-        print("❌ No matching RAW files found for any parameter set.")
+        print("❌ No matching RAW files found for any parameter set.", file=sys.stderr)
         sys.exit(1)
 
     print(f"\n📷 Will process {len(tasks)} file(s) via RawTherapee")

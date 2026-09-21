@@ -150,7 +150,7 @@ Examples:
     # ── Find frames ──────────────────────────────────────────────
     frames = find_jpg_frames(input_dir)
     if len(frames) < 3:
-        print(f"❌ Need at least 3 JPG frames for deflicker, found {len(frames)}")
+        print(f"❌ Need at least 3 JPG frames for deflicker, found {len(frames)}", file=sys.stderr)
         sys.exit(1)
 
     print(f"📷 Found {len(frames)} JPG frame(s)")

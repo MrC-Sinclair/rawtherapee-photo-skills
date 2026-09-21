@@ -24,7 +24,7 @@ Write-Host "Skill root: $skillRoot"
 Write-Host "Output zip: $zipPath"
 
 # --- Exclusion rules ---
-$excludeDirs = @(".venv", "venv", "__pycache__", ".git", ".idea", ".vscode")
+$excludeDirs = @(".venv", "venv", "__pycache__", ".git", ".idea", ".vscode", ".workbuddy")
 $excludeFiles = @("config.toml", "*.pyc", "*.pyo", "*.pyd")
 
 # --- Delete old zip ---

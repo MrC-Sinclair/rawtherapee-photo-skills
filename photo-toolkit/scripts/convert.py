@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Photo to JPG Thumbnail Generator
 
@@ -477,7 +477,21 @@ Examples:
 
     # ── Find photo files ─────────────────────────────────────────
     if args.from_stdin:
-        stdin_data = json.load(sys.stdin)
+        try:
+            stdin_data = json.load(sys.stdin)
+        except json.JSONDecodeError as e:
+            print(
+                f"Error: --from-stdin expects a JSON object on stdin "
+                f'(e.g. {{"files": ["a.jpg", "b.jpg"]}}), got invalid JSON: {e}',
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if not isinstance(stdin_data, dict):
+            print(
+                "Error: --from-stdin expects a JSON object with a 'files' array on stdin",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         file_list = stdin_data.get("files", [])
         photo_files = [Path(f) for f in file_list if Path(f).suffix.lower() in SUPPORTED_EXTENSIONS]
     else:
