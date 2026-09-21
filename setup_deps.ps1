@@ -102,10 +102,53 @@ if (-not $rt) {
         }
     }
 }
+# Custom-install fallback: bounded scan of fixed drives' top-level folders
+# (e.g. D:\workspace\RawTherapee\rawtherapee-cli.exe). Two levels deep only.
+if (-not $rt) {
+    foreach ($letter in "DEFGHIJKLMNOPQSTUVWXYZ".ToCharArray()) {
+        $drive = "${letter}:\"
+        if (-not (Test-Path $drive)) { continue }
+        foreach ($top in Get-ChildItem $drive -Directory -ErrorAction SilentlyContinue) {
+            foreach ($sub in Get-ChildItem $top.FullName -Directory -ErrorAction SilentlyContinue) {
+                if ($sub.Name -match "rawtherapee") {
+                    $hit = Join-Path $sub.FullName "rawtherapee-cli.exe"
+                    if (Test-Path $hit) { $rt = $hit; break }
+                }
+            }
+            if ($rt) { break }
+        }
+        if ($rt) { break }
+    }
+}
 if ($rt) {
     Write-Host "  ✓ RawTherapee CLI: $rt" -ForegroundColor Green
 } else {
     Write-Host $rtHint -ForegroundColor Yellow
+}
+
+# ffmpeg (best-effort; only needed by assemble.py)
+$ff = (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source
+if (-not $ff) {
+    foreach ($letter in "DEFGHIJKLMNOPQSTUVWXYZ".ToCharArray()) {
+        $drive = "${letter}:\"
+        if (-not (Test-Path $drive)) { continue }
+        foreach ($top in Get-ChildItem $drive -Directory -ErrorAction SilentlyContinue) {
+            foreach ($sub in Get-ChildItem $top.FullName -Directory -ErrorAction SilentlyContinue) {
+                if ($sub.Name -match "ffmpeg") {
+                    $hit = Join-Path $sub.FullName "bin\ffmpeg.exe"
+                    if (-not (Test-Path $hit)) { $hit = Join-Path $sub.FullName "ffmpeg.exe" }
+                    if (Test-Path $hit) { $ff = $hit; break }
+                }
+            }
+            if ($ff) { break }
+        }
+        if ($ff) { break }
+    }
+}
+if ($ff) {
+    Write-Host "  ✓ ffmpeg: $ff" -ForegroundColor Green
+} else {
+    Write-Host "  ffmpeg: not detected (only needed for assemble.py)." -ForegroundColor DarkGray
 }
 
 Write-Host ""
