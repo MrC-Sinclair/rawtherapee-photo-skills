@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Shared file matching utilities for cross-format photo file matching.
 
@@ -10,6 +10,7 @@ from pathlib import Path
 
 import os
 import shutil
+import sys
 
 
 def safe_link(src, dst):
@@ -214,4 +215,47 @@ def find_original_for_graded(graded_path, originals_dir, params_json=None, suppo
             return orig_index[candidate]
         parts = candidate.rsplit("_", 1)
 
+    return None
+
+
+def find_executable_on_drives(exe_names, keywords):
+    """Bounded autodetect on Windows: scan fixed drives' top-level folders for
+    a custom install (e.g. D:\\workspace\\RawTherapee\\rawtherapee-cli.exe).
+
+    Looks, on every fixed drive, at each top-level directory. For each top dir,
+    checks: (a) the exe directly inside it; (b) any subdir whose name contains a
+    keyword, with the exe directly inside it or under its bin/ subdir.
+    Only two levels deep, so this is fast. Returns an absolute Path or None.
+    """
+    if sys.platform != "win32":
+        return None
+    import string
+    for letter in string.ascii_uppercase:
+        drive = letter + ":\\"
+        if not os.path.isdir(drive):
+            continue
+        try:
+            top_dirs = [p for p in Path(drive).iterdir() if p.is_dir()]
+        except OSError:
+            continue
+        for top in top_dirs:
+            for name in exe_names:
+                direct = top / name
+                if direct.is_file():
+                    return direct
+            try:
+                subs = [p for p in top.iterdir() if p.is_dir()]
+            except OSError:
+                continue
+            for sub in subs:
+                sname = sub.name.lower()
+                if not any(k in sname for k in keywords):
+                    continue
+                for name in exe_names:
+                    in_sub = sub / name
+                    if in_sub.is_file():
+                        return in_sub
+                    in_bin = sub / "bin" / name
+                    if in_bin.is_file():
+                        return in_bin
     return None

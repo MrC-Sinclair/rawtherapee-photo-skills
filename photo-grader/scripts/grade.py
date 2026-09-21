@@ -58,7 +58,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 _TOOLKIT_SCRIPTS = Path(__file__).resolve().parent.parent.parent / "photo-toolkit" / "scripts"
 sys.path.insert(0, str(_TOOLKIT_SCRIPTS))
 try:
-    from file_matcher import find_file_by_stem, find_raw_file, SUPPORTED_EXTENSIONS
+    from file_matcher import find_file_by_stem, find_raw_file, SUPPORTED_EXTENSIONS, find_executable_on_drives
 except ImportError:
     # photo-toolkit is published as its own skill; it must sit next to this folder.
     sys.stderr.write(
@@ -195,6 +195,13 @@ def find_rawtherapee_cli(cli_path=None):
         if candidate.is_file():
             _RT_CLI = str(candidate.resolve())
             return _RT_CLI
+
+    # Custom-install fallback: bounded scan of fixed drives' top-level folders
+    # (e.g. D:\workspace\RawTherapee\rawtherapee-cli.exe).
+    found = find_executable_on_drives(("rawtherapee-cli.exe",), ("rawtherapee",))
+    if found:
+        _RT_CLI = str(found.resolve())
+        return _RT_CLI
 
     return None
 

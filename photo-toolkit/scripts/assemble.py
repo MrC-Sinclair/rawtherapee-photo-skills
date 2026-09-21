@@ -27,7 +27,7 @@ from pathlib import Path
 # Scripts live in the same directory; make the shared helper importable even
 # when assemble.py is invoked through an absolute path from elsewhere.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from file_matcher import safe_link  # noqa: E402
+from file_matcher import safe_link, find_executable_on_drives  # noqa: E402
 
 
 # ── Configuration ───────────────────────────────────────────────
@@ -129,8 +129,13 @@ Examples:
     else:
         output_path = input_dir.parent / "timelapse.mp4"
 
-    # ── Check FFmpeg ─────────────────────────────────────────────
-    if not shutil.which("ffmpeg"):
+    # ── Check FFmpeg (PATH, then bounded drive-root scan) ──────
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if not ffmpeg_bin and sys.platform == "win32":
+        found = find_executable_on_drives(("ffmpeg.exe",), ("ffmpeg",))
+        if found:
+            ffmpeg_bin = str(found)
+    if not ffmpeg_bin:
         print("❌ FFmpeg not found.", file=sys.stderr)
         print("   Install with: brew install ffmpeg (macOS) / apt-get install ffmpeg", file=sys.stderr)
         sys.exit(1)
@@ -177,7 +182,7 @@ Examples:
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         cmd = [
-            "ffmpeg",
+            ffmpeg_bin,
             "-y",
             "-framerate",
             str(fps),
