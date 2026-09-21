@@ -1,2 +1,8 @@
 name: rawtherapee-photo-skills
-version: 1.0.7
+version: 1.0.8
+description: >
+  AI photography post-processing toolkit (photo-toolkit + photo-grader + photo-previewer
+  merged into one skill): batch convert RAW/JPG/HEIC to JPG thumbnails, find photos by
+  shooting date, detect timelapse sequences, deflicker frames, assemble frames into MP4,
+  layout previews, browser preview of graded sessions, and Lightroom-style color grading
+  via RawTherapee CLI.
