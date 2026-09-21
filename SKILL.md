@@ -1,50 +1,7 @@
 ---
 name: rawtherapee-photo-skills
 version: 1.0.8
-description: |
-  AI photography post-processing toolkit (photo-toolkit + photo-grader + photo-previewer
-  merged into one skill):
-  batch convert RAW/JPG/HEIC to JPG thumbnails, find photos by shooting date, detect timelapse
-  sequences, deflicker frames, assemble frames into MP4 video, generate before/after or grid
-  layout previews, serve an interactive browser preview of a graded session (graded↔original
-  grid toggle, per-style tabs, mobile gestures), and apply professional Lightroom-style color
-  grading driven by LLM-generated JSON parameters (RawTherapee CLI as the grading engine).
-
-  Use when the user wants to:
-    - Convert RAW/JPG/HEIC files to JPG format (single file or batch)
-    - Generate thumbnails / previews from camera photos
-    - Batch process camera photos in a directory (with optional recursive search)
-    - Find / filter / list photos by shooting date
-    - Detect timelapse sequences, deflicker frames, assemble frames into MP4 video
-    - Apply color grading / post-processing to camera photos
-    - Batch apply Lightroom-style adjustments (exposure, contrast, HSL, tone curve, etc.)
-    - Process a set of photo files with AI-recommended color parameters
-    - Export color-graded JPGs or RawTherapee PP3 sidecar files from RAW/JPG/HEIC files
-    - Apply uniform grading to all files in a directory (timelapse / batch mode)
-    - Generate before/after comparison or grid (宫格) preview images
-    - Preview a graded session in the browser with an interactive graded↔original grid toggle
-    - Browse the historical grading sessions of a project (laptop or phone)
-
-  Triggers: User mentions converting RAW/NEF/CR2/CR3/ARW/RAF/ORF/RW2/DNG/JPG/HEIC to JPG,
-  generating thumbnails, batch processing camera photos, finding photos by date, timelapse,
-  deflicker, video assembly, color grading, applying Lightroom parameters, post-processing
-  camera photos, uniform grading for timelapse sequences, browser preview of graded photos,
-  interactive before/after preview, preview server, mobile preview.
-
-  Supported camera brands: Nikon (NEF/NRW), Canon (CR2/CR3/CRW), Sony (ARW/SRF/SR2),
-  Fujifilm (RAF), Olympus/OM (ORF), Panasonic (RW2), Pentax (PEF), Samsung (SRW),
-  Leica (RWL/DNG), Adobe DNG, Hasselblad (3FR/FFF), Phase One (IIQ), Sigma (X3F),
-  plus standard JPEG (.jpg/.jpeg) and Apple HEIC/HEIF (.heic/.heif).
-
-  Dependencies:
-    System: libraw (RedHat: dnf install LibRaw-devel / Debian: apt-get install libraw-dev),
-            ffmpeg (only needed by assemble.py), RawTherapee CLI (only needed by photo-grader)
-    Python: rawpy, pillow, numpy, tomli (Python < 3.11),
-            pillow-heif (HEIC/HEIF support: photo-toolkit decodes HEIC with it, and
-            photo-grader transcodes HEIC→TIFF with it, because RawTherapee builds
-            without libheif — including the 5.13 Windows build — cannot read HEIC),
-            tifffile (only for 10/12-bit HEIC/HEIF: photo-grader then writes a 16-bit
-            RGB TIFF instead of flattening the extra depth to 8-bit)
+description: "AI photography post-processing toolkit (photo-toolkit + photo-grader + photo-previewer merged into one skill): batch convert RAW/JPG/HEIC to JPG thumbnails, find photos by shooting date, detect/deflicker/assemble timelapse sequences, layout previews, browser preview of graded sessions, and Lightroom-style color grading via RawTherapee CLI."
 metadata:
   openclaw:
     homepage: https://github.com/MrC-Sinclair/rawtherapee-photo-skills
@@ -52,6 +9,51 @@ metadata:
     requires:
       bins:
         - python3
+---
+
+AI photography post-processing toolkit (photo-toolkit + photo-grader + photo-previewer
+merged into one skill):
+batch convert RAW/JPG/HEIC to JPG thumbnails, find photos by shooting date, detect timelapse
+sequences, deflicker frames, assemble frames into MP4 video, generate before/after or grid
+layout previews, serve an interactive browser preview of a graded session (graded↔original
+grid toggle, per-style tabs, mobile gestures), and apply professional Lightroom-style color
+grading driven by LLM-generated JSON parameters (RawTherapee CLI as the grading engine).
+
+Use when the user wants to:
+  - Convert RAW/JPG/HEIC files to JPG format (single file or batch)
+  - Generate thumbnails / previews from camera photos
+  - Batch process camera photos in a directory (with optional recursive search)
+  - Find / filter / list photos by shooting date
+  - Detect timelapse sequences, deflicker frames, assemble frames into MP4 video
+  - Apply color grading / post-processing to camera photos
+  - Batch apply Lightroom-style adjustments (exposure, contrast, HSL, tone curve, etc.)
+  - Process a set of photo files with AI-recommended color parameters
+  - Export color-graded JPGs or RawTherapee PP3 sidecar files from RAW/JPG/HEIC files
+  - Apply uniform grading to all files in a directory (timelapse / batch mode)
+  - Generate before/after comparison or grid (宫格) preview images
+  - Preview a graded session in the browser with an interactive graded↔original grid toggle
+  - Browse the historical grading sessions of a project (laptop or phone)
+
+Triggers: User mentions converting RAW/NEF/CR2/CR3/ARW/RAF/ORF/RW2/DNG/JPG/HEIC to JPG,
+generating thumbnails, batch processing camera photos, finding photos by date, timelapse,
+deflicker, video assembly, color grading, applying Lightroom parameters, post-processing
+camera photos, uniform grading for timelapse sequences, browser preview of graded photos,
+interactive before/after preview, preview server, mobile preview.
+
+Supported camera brands: Nikon (NEF/NRW), Canon (CR2/CR3/CRW), Sony (ARW/SRF/SR2),
+Fujifilm (RAF), Olympus/OM (ORF), Panasonic (RW2), Pentax (PEF), Samsung (SRW),
+Leica (RWL/DNG), Adobe DNG, Hasselblad (3FR/FFF), Phase One (IIQ), Sigma (X3F),
+plus standard JPEG (.jpg/.jpeg) and Apple HEIC/HEIF (.heic/.heif).
+
+Dependencies:
+  System: libraw (RedHat: dnf install LibRaw-devel / Debian: apt-get install libraw-dev),
+          ffmpeg (only needed by assemble.py), RawTherapee CLI (only needed by photo-grader)
+  Python: rawpy, pillow, numpy, tomli (Python < 3.11),
+          pillow-heif (HEIC/HEIF support: photo-toolkit decodes HEIC with it, and
+          photo-grader transcodes HEIC→TIFF with it, because RawTherapee builds
+          without libheif — including the 5.13 Windows build — cannot read HEIC),
+          tifffile (only for 10/12-bit HEIC/HEIF: photo-grader then writes a 16-bit
+          RGB TIFF instead of flattening the extra depth to 8-bit)
 ---
 
 # rawtherapee-photo-skills — convert, screen, grade, and compose camera photos.
