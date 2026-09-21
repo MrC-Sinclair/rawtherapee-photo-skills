@@ -10,6 +10,8 @@ ClawHub / Marvis treat one folder as one skill. The per-module history lives in
 
 ## [Unreleased]
 
+## [1.0.8] - 2026-09-21
+
 Review pass over the execution chain: three script-level defects and three documentation
 mismatches. No CLI contract, `grading_params.json` field, or dependency change; the whole chain
 stays parameter-only grading plus deterministic geometry — there is no generative/image-synthesis
