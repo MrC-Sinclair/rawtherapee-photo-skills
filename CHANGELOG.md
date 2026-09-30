@@ -10,6 +10,29 @@ ClawHub / Marvis treat one folder as one skill. The per-module history lives in
 
 ## [Unreleased]
 
+### Fixed
+
+- **`setup_deps.ps1` aborted before it could install anything — the documented Windows setup
+  path never completed on a fresh machine.** `$ErrorActionPreference = "Stop"` (line 6) turns a
+  native command's redirected stderr into a terminating `NativeCommandError` on PowerShell 5.1, so
+  the venv health probes (`python -c "import rawpy, ..." 2>$null`) threw as soon as a module was
+  missing — i.e. exactly the condition the "broken venv, recreate it" branch exists to handle,
+  which therefore stayed unreachable. The `import x; print('✓ ...')` verify block had the same
+  problem and printed nothing at all on failure. Those calls now go through an `Invoke-Native`
+  helper that restores `Continue` for the duration of the native call and returns
+  `$LASTEXITCODE`, so the exit code is what decides; venv creation and each `pip install -r` are
+  now checked and fail with a readable `❌` line instead of a PowerShell exception record. The
+  verify block reports `✗ <package> MISSING` instead of staying silent when an import fails.
+- **`pip install -r` died with `UnicodeDecodeError: 'gbk' codec can't decode byte 0x94` on
+  zh-CN Windows.** `photo-grader/requirements.txt` and `photo-previewer/requirements.txt` carried
+  U+2014 (—) and U+2192 (→) in their comments. pip's `auto_decode()` uses a BOM or a coding
+  declaration when present and otherwise falls back to `locale.getpreferredencoding(False)` —
+  cp936 on a Chinese Windows, which cannot represent those bytes — so parsing failed before any
+  download started. `photo-toolkit/requirements.txt` was already pure ASCII, which is why only the
+  latter two files broke. Both are now ASCII-only rather than saved with a BOM or a coding
+  declaration, so installation no longer depends on the machine's locale or on pip's internal
+  decoding rules.
+
 ## [1.0.8] - 2026-09-21
 
 Review pass over the execution chain: three script-level defects and three documentation

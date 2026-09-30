@@ -13,6 +13,40 @@ Write-Host "  photo-skills — Windows 依赖安装"
 Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 Write-Host ""
 
+# ── Native-command runner ────────────────────────────────────
+# PowerShell 5.1 promotes a native command's redirected stderr to an ErrorRecord,
+# which $ErrorActionPreference="Stop" then aborts the script on -- a failing
+# `python -c "import x"` therefore killed the script before it could report or
+# repair anything. Every probe below decides on $LASTEXITCODE, so stderr has to
+# stay non-terminating for those calls.
+function Invoke-Native {
+    param(
+        [string]$Exe,
+        [string[]]$Arguments = @(),
+        [switch]$Show
+    )
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        if ($Show) {
+            & $Exe @Arguments 2>&1 | ForEach-Object {
+                if ($_ -is [System.Management.Automation.ErrorRecord]) {
+                    # pip flushes an empty stderr chunk; rendering one prints nothing but
+                    # the exception type name, so skip it.
+                    if ($_.Exception.Message) { Write-Host $_.Exception.Message }
+                } else {
+                    Write-Host $_
+                }
+            }
+        } else {
+            $null = & $Exe @Arguments 2>&1
+        }
+        return $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+}
+
 # ── Locate a Python ──────────────────────────────────────────
 $py = $null
 foreach ($cand in @("py -3", "python", "python3")) {
@@ -33,12 +67,9 @@ $needVenv = $true
 if (Test-Path $venvPy) {
     # A venv copied from another machine points at a non-existent base
     # interpreter. Verify it actually runs before trusting it.
-    & $venvPy -c "import sys; sys.exit(0)" 2>$null
-    if ($LASTEXITCODE -eq 0) {
-        & $venvPy -c "import rawpy, PIL.Image, PIL.Image, numpy" 2>$null
-        $coreOk = ($LASTEXITCODE -eq 0)
-        & $venvPy -c "import pillow_heif" 2>$null
-        $heifOk = ($LASTEXITCODE -eq 0)
+    if ((Invoke-Native $venvPy @("-c", "import sys; sys.exit(0)")) -eq 0) {
+        $coreOk = (Invoke-Native $venvPy @("-c", "import rawpy, PIL.Image, numpy")) -eq 0
+        $heifOk = (Invoke-Native $venvPy @("-c", "import pillow_heif")) -eq 0
         if ($coreOk -and $heifOk) {
             Write-Host "  ✓ Existing .venv is healthy" -ForegroundColor Green
             $needVenv = $false
@@ -54,8 +85,8 @@ if (Test-Path $venvPy) {
 
 if ($needVenv) {
     Write-Host "  Creating .venv ..."
-    & $py -m venv (Join-Path $SkillRoot ".venv")
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $venvPy)) {
+    if ((Invoke-Native $py @("-m", "venv", (Join-Path $SkillRoot ".venv")) -Show) -ne 0 -or
+        -not (Test-Path $venvPy)) {
         Write-Host "❌ venv creation failed" -ForegroundColor Red
         exit 1
     }
@@ -72,15 +103,26 @@ foreach ($req in @(
     $reqPath = Join-Path $SkillRoot $req
     if (Test-Path $reqPath) {
         Write-Host "    $req"
-        & $venvPy -m pip install -r $reqPath --quiet
+        if ((Invoke-Native $venvPy @("-m", "pip", "install", "-r", $reqPath, "--quiet") -Show) -ne 0) {
+            Write-Host "❌ pip install failed: $req" -ForegroundColor Red
+            exit 1
+        }
     }
 }
 
 # ── Verify ───────────────────────────────────────────────────
 Write-Host ""
-& $venvPy -c "import rawpy, numpy, PIL.Image; print('  ✓ core deps OK')" 2>$null
-& $venvPy -c "import pillow_heif; print('  ✓ pillow-heif OK (HEIC input)')" 2>$null
-& $venvPy -c "import tifffile; print('  ✓ tifffile OK (10/12-bit HEIC)')" 2>$null
+foreach ($check in @(
+    @{ imp = "rawpy, numpy, PIL.Image"; ok = "core deps OK";                 miss = "rawpy/pillow/numpy MISSING" },
+    @{ imp = "pillow_heif";            ok = "pillow-heif OK (HEIC input)";  miss = "pillow-heif MISSING (needed for .heic/.heif input)" },
+    @{ imp = "tifffile";               ok = "tifffile OK (10/12-bit HEIC)"; miss = "tifffile MISSING (10/12-bit HEIC degrades to 8-bit)" }
+)) {
+    if ((Invoke-Native $venvPy @("-c", "import $($check.imp)")) -eq 0) {
+        Write-Host "  ✓ $($check.ok)" -ForegroundColor Green
+    } else {
+        Write-Host "  ✗ $($check.miss)" -ForegroundColor Red
+    }
+}
 
 # ── RawTherapee CLI (best-effort; external app, not pip) ────
 Write-Host ""
