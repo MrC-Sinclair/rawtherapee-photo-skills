@@ -1,6 +1,16 @@
-# ============================================================
-# Build uploadable zip for Doubao Work
-# Usage: double-click the .bat file
+﻿# ============================================================
+# 一键打包：产出多个平台的技能包
+#
+#   <skill>-豆包版.zip     豆包工作 — 条目平铺在压缩包根目录
+#   <skill>-通用版.zip     Qoder / Marvis / WorkBuddy / Claude 等
+#                          整套约定为 <工具>/skills/<技能名>/SKILL.md，
+#                          此包把所有条目套在一层 <skill>/ 目录下，
+#                          且包内不含中文文件名（部分导入器会直接拒收）
+#
+# 用法：双击 .bat
+#
+# 注意：本文件必须存成「UTF-8 with BOM」。PowerShell 5.1 读无 BOM 的
+# UTF-8 时按 ANSI(cp936) 解码，下面的中文包名会变成乱码文件名。
 # ============================================================
 
 $ErrorActionPreference = "Stop"
@@ -18,25 +28,34 @@ if (-not $skillRoot) {
 }
 $skillRoot = $skillRoot.TrimEnd('\')
 $skillName = Split-Path $skillRoot -Leaf
-$zipPath = Join-Path $skillRoot "$skillName.zip"
+$prefixLen = $skillRoot.Length + 1
 
 Write-Host "Skill root: $skillRoot"
-Write-Host "Output zip: $zipPath"
 
-# --- Exclusion rules ---
+# --- Rules shared by every package ---
 $excludeDirs = @(".venv", "venv", "__pycache__", ".git", ".idea", ".vscode", ".workbuddy")
-$excludeFiles = @("config.toml", "*.pyc", "*.pyo", "*.pyd")
+# *.zip: a previous run's output sits in $skillRoot and is picked up by
+# Get-ChildItem before New-Package deletes it, which would then throw on the
+# missing file (and nest the other package into this one).
+$excludeFiles = @("config.toml", "*.pyc", "*.pyo", "*.pyd", "*.zip")
 
-# --- Delete old zip ---
-if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+# --- Rules only for the generic package ---
+# Packaging tooling never ships; neither do non-ASCII names (some importers
+# reject them outright) nor repo-local dotfiles.
+$toolFiles = @("build_upload_zip.ps1")
 
-# --- Create standard zip with .NET (forward slashes) ---
-# Get all files, filter out excluded dirs/files
+function Test-AsciiOnly {
+    param([string]$Text)
+    foreach ($ch in $Text.ToCharArray()) {
+        if ([int]$ch -gt 127) { return $false }
+    }
+    return $true
+}
+
 Write-Host "Collecting files..."
 $allFiles = Get-ChildItem -Path $skillRoot -Recurse -File
 
-# Filter out excluded directories
-$filtered = $allFiles | Where-Object {
+$shared = $allFiles | Where-Object {
     $path = $_.FullName
     $skip = $false
     foreach ($d in $excludeDirs) {
@@ -50,36 +69,80 @@ $filtered = $allFiles | Where-Object {
     -not $skip
 }
 
-Write-Host "Compressing $($filtered.Count) files..."
-$zip = [System.IO.Compression.ZipFile]::Open($zipPath, [System.IO.Compression.ZipArchiveMode]::Create)
-
-$prefixLen = $skillRoot.TrimEnd('\').Length + 1
-
-foreach ($file in $filtered) {
-    $relativePath = $file.FullName.Substring($prefixLen).Replace('\', '/')
-    [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
-        $zip, $file.FullName, $relativePath,
-        [System.IO.Compression.CompressionLevel]::Optimal
-    ) | Out-Null
+function Get-RelativePath {
+    param([System.IO.FileInfo]$File)
+    return $File.FullName.Substring($prefixLen).Replace('\', '/')
 }
-$zip.Dispose()
 
-# --- Stats & verify ---
-$fileCount = $filtered.Count
-$sizeKB = [math]::Round((Get-Item $zipPath).Length / 1KB, 1)
-
-$verifyZip = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
-$hasSkillMd = $false
-foreach ($entry in $verifyZip.Entries) {
-    if ($entry.FullName -eq "SKILL.md") { $hasSkillMd = $true; break }
+$generic = $shared | Where-Object {
+    $rel = Get-RelativePath $_
+    $keep = $true
+    if (-not (Test-AsciiOnly $rel)) { $keep = $false }
+    if ($toolFiles -contains $_.Name) { $keep = $false }
+    if ($_.Name -like ".*") { $keep = $false }
+    $keep
 }
-$verifyZip.Dispose()
+
+function New-Package {
+    param(
+        [string]$ZipPath,
+        [object]$Items,
+        [string]$EntryPrefix = ""
+    )
+    if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }
+    $written = 0
+    $zip = [System.IO.Compression.ZipFile]::Open($ZipPath, [System.IO.Compression.ZipArchiveMode]::Create)
+    try {
+        foreach ($file in $Items) {
+            $rel = Get-RelativePath $file
+            $entry = if ($EntryPrefix) { "$EntryPrefix/$rel" } else { $rel }
+            [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+                $zip, $file.FullName, $entry,
+                [System.IO.Compression.CompressionLevel]::Optimal
+            ) | Out-Null
+            $written++
+        }
+    } finally {
+        $zip.Dispose()
+    }
+    return $written
+}
+
+function Show-Package {
+    param(
+        [string]$ZipPath,
+        [int]$Written,
+        [string]$SkillMdEntry
+    )
+    $sizeKB = [math]::Round((Get-Item $ZipPath).Length / 1KB, 1)
+    $zip = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
+    try {
+        $skillMdOk = (@($zip.Entries | Where-Object { $_.FullName -eq $SkillMdEntry }).Count -gt 0)
+        $pyCount = @($zip.Entries | Where-Object { $_.FullName -like "*.py" }).Count
+        $roots = @($zip.Entries | ForEach-Object { ($_.FullName -split '/')[0] } | Sort-Object -Unique)
+    } finally {
+        $zip.Dispose()
+    }
+    $leaf = Split-Path $ZipPath -Leaf
+    Write-Host ""
+    Write-Host "  $leaf"
+    Write-Host "    $Written files, $sizeKB KB, $pyCount .py scripts"
+    Write-Host "    SKILL.md at '$SkillMdEntry': $(if ($skillMdOk) { 'OK' } else { 'MISSING' })"
+    Write-Host "    top-level entries: $($roots -join ', ')"
+    if (-not $skillMdOk) { exit 1 }
+}
+
+$doubaoZip = Join-Path $skillRoot "$skillName-豆包版.zip"
+$genericZip = Join-Path $skillRoot "$skillName-通用版.zip"
+
+Write-Host "Compressing 豆包版 ($($shared.Count) candidates)..."
+$n1 = New-Package -ZipPath $doubaoZip -Items $shared
+
+Write-Host "Compressing 通用版 ($($generic.Count) candidates)..."
+$n2 = New-Package -ZipPath $genericZip -Items $generic -EntryPrefix $skillName
 
 Write-Host ""
-Write-Host "Done! $fileCount files, $sizeKB KB"
-if ($hasSkillMd) {
-    Write-Host "SKILL.md at root: OK"
-} else {
-    Write-Host "WARNING: SKILL.md missing at root!"
-}
+Write-Host "Done. Packages written to $skillRoot"
+Show-Package -ZipPath $doubaoZip -Written $n1 -SkillMdEntry "SKILL.md"
+Show-Package -ZipPath $genericZip -Written $n2 -SkillMdEntry "$skillName/SKILL.md"
 Write-Host ""
